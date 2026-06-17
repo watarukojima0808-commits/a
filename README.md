@@ -4,9 +4,7 @@
 
 ## セットアップ
 
-```bash
-pip install requests
-```
+Python 3.x のみ必要です（追加ライブラリ不要）。
 
 ## 使い方
 

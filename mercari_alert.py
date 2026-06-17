@@ -6,13 +6,12 @@ Usage: python mercari_alert.py "Nintendo Switch" 20000 --interval 60
 
 import time
 import sys
+import json
 import argparse
 from datetime import datetime
 
-try:
-    import requests
-except ImportError:
-    sys.exit("requests が見つかりません: pip install requests")
+import urllib.request
+import urllib.error
 
 
 SEARCH_API = "https://api.mercari.jp/v2/entities:search"
@@ -74,20 +73,16 @@ def build_payload(keyword: str, max_price: int, limit: int = 30) -> dict:
     }
 
 
-def fetch_items(session: requests.Session, keyword: str, max_price: int) -> list[dict]:
+def fetch_items(keyword: str, max_price: int) -> list[dict]:
+    body = json.dumps(build_payload(keyword, max_price)).encode()
+    req = urllib.request.Request(SEARCH_API, data=body, headers=HEADERS, method="POST")
     try:
-        resp = session.post(
-            SEARCH_API,
-            json=build_payload(keyword, max_price),
-            headers=HEADERS,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return resp.json().get("items", [])
-    except requests.HTTPError as e:
-        print(f"\n[WARN] HTTP {e.response.status_code} — {e}")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read()).get("items", [])
+    except urllib.error.HTTPError as e:
+        print(f"\n[WARN] HTTP {e.code} — {e.reason}")
         return []
-    except requests.RequestException as e:
+    except Exception as e:
         print(f"\n[WARN] 通信エラー: {e}")
         return []
 
@@ -108,18 +103,17 @@ def run(keyword: str, max_price: int, interval: int) -> None:
     print(f"  監視間隔   : {interval}秒")
     print(f"  停止       : Ctrl+C\n")
 
-    session = requests.Session()
     seen: set[str] = set()
 
     print("初期データ取得中...")
-    initial = fetch_items(session, keyword, max_price)
+    initial = fetch_items(keyword, max_price)
     seen.update(i["id"] for i in initial if "id" in i)
     print(f"既存 {len(seen)} 件を確認。以降の新着を通知します。\n")
 
     while True:
         time.sleep(interval)
         now = datetime.now().strftime("%H:%M:%S")
-        items = fetch_items(session, keyword, max_price)
+        items = fetch_items(keyword, max_price)
         new_items = [i for i in items if i.get("id") not in seen]
 
         if new_items:
