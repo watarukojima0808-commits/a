@@ -2,12 +2,15 @@
 """
 Mercari price alert bot
 Usage: python mercari_alert.py "Nintendo Switch" 20000 --interval 60
+       python mercari_alert.py "Nintendo Switch" 20000 --gmail-from you@gmail.com --gmail-to you@gmail.com --gmail-password "xxxx xxxx xxxx xxxx"
 """
 
 import time
 import sys
 import json
 import argparse
+import smtplib
+from email.mime.text import MIMEText
 from datetime import datetime
 
 import urllib.request
@@ -28,7 +31,7 @@ HEADERS = {
     "X-Platform": "web",
     "Origin": "https://jp.mercari.com",
     "Referer": "https://jp.mercari.com/",
-    "DPoP": "dummy",  # required header (value ignored by server for public searches)
+    "DPoP": "dummy",
 }
 
 
@@ -87,6 +90,31 @@ def fetch_items(keyword: str, max_price: int) -> list[dict]:
         return []
 
 
+def send_gmail(gmail_from: str, gmail_to: str, password: str, subject: str, body: str) -> None:
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = gmail_from
+    msg["To"] = gmail_to
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(gmail_from, password)
+            smtp.send_message(msg)
+        print("  [Gmail] 送信完了")
+    except Exception as e:
+        print(f"  [Gmail] 送信失敗: {e}")
+
+
+def format_items_text(items: list[dict]) -> str:
+    lines = []
+    for item in items:
+        item_id = item.get("id", "")
+        name = item.get("name", "不明")
+        price = item.get("price", 0)
+        url = f"https://jp.mercari.com/item/{item_id}"
+        lines.append(f"¥{price:,}  {name}\n{url}")
+    return "\n\n".join(lines)
+
+
 def print_item(item: dict) -> None:
     item_id = item.get("id", "")
     name = item.get("name", "不明")[:50]
@@ -96,11 +124,12 @@ def print_item(item: dict) -> None:
     print(f"            {url}")
 
 
-def run(keyword: str, max_price: int, interval: int) -> None:
-    print(f"メルカリ監視開始")
+def run(keyword: str, max_price: int, interval: int, gmail: dict | None) -> None:
+    print("メルカリ監視開始")
     print(f"  キーワード : {keyword}")
     print(f"  上限価格   : ¥{max_price:,}")
     print(f"  監視間隔   : {interval}秒")
+    print(f"  Gmail通知  : {'有効' if gmail else '無効'}")
     print(f"  停止       : Ctrl+C\n")
 
     seen: set[str] = set()
@@ -124,6 +153,12 @@ def run(keyword: str, max_price: int, interval: int) -> None:
             for item in new_items:
                 print_item(item)
             print()
+
+            if gmail:
+                subject = f"【メルカリ】新着 {len(new_items)} 件「{keyword}」¥{max_price:,}以下"
+                body = format_items_text(new_items)
+                send_gmail(gmail["from"], gmail["to"], gmail["password"], subject, body)
+
             seen.update(i["id"] for i in new_items if "id" in i)
         else:
             print(f"[{now}] 新着なし ({len(seen)} 件監視中)", end="\r", flush=True)
@@ -133,11 +168,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="メルカリ価格アラートボット",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="例:\n  python mercari_alert.py 'Nintendo Switch' 20000\n  python mercari_alert.py 'AirPods Pro' 15000 --interval 120",
+        epilog=(
+            "例:\n"
+            "  python mercari_alert.py 'Nintendo Switch' 20000\n"
+            "  python mercari_alert.py 'AirPods Pro' 15000 --interval 120 \\\n"
+            "    --gmail-from you@gmail.com --gmail-to you@gmail.com \\\n"
+            "    --gmail-password 'xxxx xxxx xxxx xxxx'"
+        ),
     )
     parser.add_argument("keyword", help="検索キーワード")
     parser.add_argument("max_price", type=int, help="上限価格 (円)")
     parser.add_argument("--interval", type=int, default=60, metavar="秒", help="監視間隔 (デフォルト: 60秒)")
+    parser.add_argument("--gmail-from", metavar="アドレス", help="送信元Gmailアドレス")
+    parser.add_argument("--gmail-to", metavar="アドレス", help="送信先メールアドレス")
+    parser.add_argument("--gmail-password", metavar="パスワード", help="Gmailアプリパスワード (16桁)")
     args = parser.parse_args()
 
     if args.max_price <= 0:
@@ -145,8 +189,18 @@ def main() -> None:
     if args.interval < 10:
         sys.exit("監視間隔は10秒以上を指定してください (サーバー負荷対策)。")
 
+    gmail = None
+    if args.gmail_from or args.gmail_to or args.gmail_password:
+        if not all([args.gmail_from, args.gmail_to, args.gmail_password]):
+            sys.exit("Gmail通知を使う場合は --gmail-from / --gmail-to / --gmail-password をすべて指定してください。")
+        gmail = {
+            "from": args.gmail_from,
+            "to": args.gmail_to,
+            "password": args.gmail_password,
+        }
+
     try:
-        run(args.keyword, args.max_price, args.interval)
+        run(args.keyword, args.max_price, args.interval, gmail)
     except KeyboardInterrupt:
         print("\n\n監視を終了しました。")
 
