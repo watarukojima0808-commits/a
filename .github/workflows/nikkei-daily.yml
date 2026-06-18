@@ -1,0 +1,28 @@
+name: 日経225 毎朝おすすめ銘柄レポート
+
+on:
+  schedule:
+    - cron: '30 23 * * 0-4'  # 8:30 JST (月曜〜金曜)
+  workflow_dispatch:           # 手動実行も可能
+
+jobs:
+  nikkei-daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存ライブラリをインストール
+        run: pip install -r requirements.txt
+
+      - name: おすすめ銘柄レポートを生成・送信
+        run: python nikkei_daily.py
+        env:
+          GMAIL_FROM: ${{ secrets.GMAIL_FROM }}
+          GMAIL_TO: ${{ secrets.GMAIL_TO }}
+          GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
