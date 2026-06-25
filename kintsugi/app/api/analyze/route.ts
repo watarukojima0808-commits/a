@@ -17,22 +17,22 @@ export async function POST(request: Request) {
       messages: [
         {
           role: "user",
-          content: `You are a Kintsugi master — you find the gold in broken things.
+          content: `あなたは金継ぎの達人です。壊れたものの中に金を見つける人です。
 
-A user has written about a failure, setback, or difficult experience in their journal. Your job is to practice "kintsugi" on this moment: find and name the gold hidden within the crack.
+ユーザーがジャーナルに失敗、挫折、または辛い体験を書きました。あなたの仕事はこの瞬間に「金継ぎ」を施すことです：亀裂の中に隠れた金を見つけ、名前をつけてください。
 
-Respond in JSON with this exact structure:
+必ず日本語で、以下のJSON形式で返してください：
 {
-  "goldLine": "One powerful sentence (max 20 words) that names the hidden gift or lesson — poetic, not platitudinous",
-  "wisdom": "2-3 sentences expanding on the gold. Be specific to THEIR situation. Avoid generic advice. Reference something they actually wrote.",
-  "strength": "Name one specific strength this experience revealed or forged in them (1-4 words, e.g. 'Resilient discernment' or 'Quiet courage')",
-  "question": "One reflective question to deepen their insight (optional — only if genuinely useful)"
+  "goldLine": "隠れた贈り物や教訓を表す力強い一文（最大30文字）。詩的に、陳腐にならないように。",
+  "wisdom": "その金についての2〜3文。ユーザーの状況に具体的に言及してください。実際に書かれた内容を参照して、一般的なアドバイスは避けてください。",
+  "strength": "この体験が明らかにした、または鍛えた強さを一言で（2〜8文字。例：「静かな勇気」「しなやかな判断力」）",
+  "question": "洞察を深める内省的な質問（本当に役立つ場合のみ。任意）"
 }
 
-The user's journal entry:
+ユーザーのジャーナルエントリー：
 ${entry.trim()}
 
-Return only valid JSON, nothing else.`,
+有効なJSONのみを返してください。他は何も返さないでください。`,
         },
       ],
     });

@@ -171,7 +171,7 @@ export default function JournalPage() {
               border: "1px solid #c9a84c",
             }}
           >
-            Write
+            書く
           </button>
           <button
             onClick={() => setView("gallery")}
@@ -182,7 +182,7 @@ export default function JournalPage() {
               border: "1px solid #c9a84c",
             }}
           >
-            Gallery ({entries.length})
+            ギャラリー ({entries.length})
           </button>
         </div>
       </header>
@@ -349,7 +349,7 @@ export default function JournalPage() {
             <div className="flex-1 overflow-y-auto scrollbar-gold p-8">
               {!selected ? (
                 <div className="flex items-center justify-center h-full opacity-20 text-sm">
-                  Select an entry to read
+                  エントリーを選んでください
                 </div>
               ) : (
                 <div className="max-w-xl mx-auto fade-in-up">
