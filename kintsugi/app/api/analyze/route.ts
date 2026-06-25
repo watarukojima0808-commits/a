@@ -44,8 +44,9 @@ Return only valid JSON, nothing else.`,
     );
   }
 
-  const text =
+  const raw =
     message.content[0].type === "text" ? message.content[0].text : "";
+  const text = raw.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
 
   try {
     const parsed = JSON.parse(text);
