@@ -72,13 +72,13 @@ export default function JournalPage() {
   const [view, setView] = useState<"write" | "gallery">("write");
   const [error, setError] = useState("");
   const [monthlyUsage, setMonthlyUsage] = useState(0);
+  const [isGold, setIsGold] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem("kintsugi-entries");
-    if (saved) {
-      setEntries(JSON.parse(saved));
-    }
+    if (saved) setEntries(JSON.parse(saved));
     setMonthlyUsage(getMonthlyUsage());
+    setIsGold(localStorage.getItem("kintsugi-gold") === "true");
   }, []);
 
   function saveEntries(updated: Entry[]) {
@@ -103,7 +103,7 @@ export default function JournalPage() {
     };
 
     const usage = getMonthlyUsage();
-    if (usage >= FREE_LIMIT) {
+    if (!isGold && usage >= FREE_LIMIT) {
       setError("今月の無料AI分析（5回）を使い切りました。Goldプランで無制限に使えます。");
       setLoading(false);
       const updated = [newEntry, ...entries];
@@ -196,30 +196,37 @@ export default function JournalPage() {
                 className="text-xs tracking-[0.3em] uppercase mb-3"
                 style={{ color: "#c9a84c" }}
               >
-                Today&apos;s Crack
+                今日の亀裂
               </p>
               <h2
                 className="text-2xl font-light"
                 style={{ color: "#e8e0d0" }}
               >
-                What broke today?
+                今日、何が壊れましたか？
               </h2>
               <p className="text-sm mt-2 opacity-40">
-                Write honestly. The more real, the more gold we can find.
+                正直に書いてください。本音であるほど、より多くの金が見つかります。
               </p>
-              <div className="mt-2 text-xs" style={{ color: monthlyUsage >= FREE_LIMIT ? "#c9a84c" : "#c9a84c", opacity: 0.6 }}>
-                {monthlyUsage >= FREE_LIMIT ? (
-                  <span>今月の無料AI分析を使い切りました（{FREE_LIMIT}/{FREE_LIMIT}）— <a href="/" style={{ textDecoration: "underline" }}>Goldにアップグレード</a></span>
-                ) : (
-                  <span>今月の無料AI分析: {monthlyUsage}/{FREE_LIMIT}回使用</span>
-                )}
-              </div>
+              {!isGold && (
+                <div className="mt-2 text-xs" style={{ color: "#c9a84c", opacity: 0.6 }}>
+                  {monthlyUsage >= FREE_LIMIT ? (
+                    <span>今月の無料AI分析を使い切りました（{FREE_LIMIT}/{FREE_LIMIT}）— <a href="/" style={{ textDecoration: "underline" }}>Goldにアップグレード</a></span>
+                  ) : (
+                    <span>今月の無料AI分析: {monthlyUsage}/{FREE_LIMIT}回使用</span>
+                  )}
+                </div>
+              )}
+              {isGold && (
+                <div className="mt-2 text-xs" style={{ color: "#c9a84c", opacity: 0.6 }}>
+                  ✦ Gold会員 — AI分析無制限
+                </div>
+              )}
             </div>
 
             <textarea
               value={currentText}
               onChange={(e) => setCurrentText(e.target.value)}
-              placeholder="I failed at... I made a mistake when... I was rejected by... I feel broken because..."
+              placeholder="失敗したのは... ミスをしたのは... 断られたのは... 壊れた気がするのは..."
               className="flex-1 min-h-64 w-full p-4 rounded text-sm leading-relaxed resize-none focus:outline-none"
               style={{
                 backgroundColor: "#111009",
@@ -250,7 +257,7 @@ export default function JournalPage() {
                   borderRadius: "2px",
                 }}
               >
-                {loading ? "Finding Gold..." : "Find the Gold →"}
+                {loading ? "金を探しています..." : "金を見つける →"}
               </button>
             </div>
 
@@ -272,7 +279,7 @@ export default function JournalPage() {
                     />
                   </svg>
                   <p className="text-xs mt-3 opacity-40">
-                    Applying gold to your crack...
+                    亀裂に金を塗っています...
                   </p>
                 </div>
               </div>
@@ -291,13 +298,13 @@ export default function JournalPage() {
               {entries.length === 0 ? (
                 <div className="p-6 text-center opacity-40 text-sm mt-8">
                   <CrackIcon size={32} />
-                  <p className="mt-3">No entries yet.</p>
+                  <p className="mt-3">まだエントリーがありません。</p>
                   <button
                     onClick={() => setView("write")}
                     className="mt-3 text-xs underline"
                     style={{ color: "#c9a84c" }}
                   >
-                    Write your first entry
+                    最初のエントリーを書く
                   </button>
                 </div>
               ) : (
@@ -365,7 +372,7 @@ export default function JournalPage() {
                       className="text-xs uppercase tracking-widest mb-3 opacity-40"
                       style={{ color: "#e8e0d0" }}
                     >
-                      The Crack
+                      亀裂
                     </h3>
                     <p
                       className="text-sm leading-relaxed"
@@ -388,7 +395,7 @@ export default function JournalPage() {
                         className="text-xs uppercase tracking-widest mb-4"
                         style={{ color: "#c9a84c" }}
                       >
-                        ✦ The Gold
+                        ✦ 金
                       </h3>
                       <p
                         className="text-lg font-light italic mb-5 leading-relaxed"
@@ -410,7 +417,7 @@ export default function JournalPage() {
                           border: "1px solid #252218",
                         }}
                       >
-                        Strength forged: {selected.gold.strength}
+                        鍛えられた強さ: {selected.gold.strength}
                       </div>
                       {selected.gold.question && (
                         <p
@@ -430,7 +437,7 @@ export default function JournalPage() {
                       }}
                     >
                       <p className="text-sm opacity-40">
-                        No gold analysis for this entry.
+                        このエントリーにはAI分析がありません。
                       </p>
                     </div>
                   )}
@@ -440,7 +447,7 @@ export default function JournalPage() {
                     className="mt-6 text-xs opacity-20 hover:opacity-50 transition-opacity"
                     style={{ color: "#e8e0d0" }}
                   >
-                    Delete this entry
+                    このエントリーを削除
                   </button>
                 </div>
               )}
