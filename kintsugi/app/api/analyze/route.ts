@@ -9,13 +9,15 @@ export async function POST(request: Request) {
     return Response.json({ error: "Entry too short" }, { status: 400 });
   }
 
-  const message = await client.messages.create({
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 600,
-    messages: [
-      {
-        role: "user",
-        content: `You are a Kintsugi master — you find the gold in broken things.
+  let message;
+  try {
+    message = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 600,
+      messages: [
+        {
+          role: "user",
+          content: `You are a Kintsugi master — you find the gold in broken things.
 
 A user has written about a failure, setback, or difficult experience in their journal. Your job is to practice "kintsugi" on this moment: find and name the gold hidden within the crack.
 
@@ -31,9 +33,16 @@ The user's journal entry:
 ${entry.trim()}
 
 Return only valid JSON, nothing else.`,
-      },
-    ],
-  });
+        },
+      ],
+    });
+  } catch (e) {
+    console.error("Anthropic API error:", e);
+    return Response.json(
+      { error: "AI API error", detail: String(e) },
+      { status: 500 }
+    );
+  }
 
   const text =
     message.content[0].type === "text" ? message.content[0].text : "";
@@ -41,7 +50,8 @@ Return only valid JSON, nothing else.`,
   try {
     const parsed = JSON.parse(text);
     return Response.json(parsed);
-  } catch {
+  } catch (e) {
+    console.error("Parse error:", e, "Raw text:", text);
     return Response.json(
       { error: "Failed to parse AI response" },
       { status: 500 }
