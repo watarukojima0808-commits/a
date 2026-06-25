@@ -5,27 +5,34 @@ import { useState } from "react";
 
 function GoldButton() {
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   async function handleClick() {
     setLoading(true);
+    setError("");
     try {
       const res = await fetch("/api/create-checkout-session", { method: "POST" });
-      const { url } = await res.json();
-      window.location.href = url;
-    } catch {
+      const data = await res.json();
+      if (!data.url) throw new Error(JSON.stringify(data));
+      window.location.href = data.url;
+    } catch (e) {
+      setError(String(e));
       setLoading(false);
     }
   }
 
   return (
-    <button
-      onClick={handleClick}
-      disabled={loading}
-      className="block w-full mt-8 text-center py-2 rounded text-sm transition-opacity hover:opacity-90 disabled:opacity-50"
-      style={{ backgroundColor: "#c9a84c", color: "#0d0b07" }}
-    >
-      {loading ? "Loading..." : "Start Gold Trial"}
-    </button>
+    <>
+      <button
+        onClick={handleClick}
+        disabled={loading}
+        className="block w-full mt-8 text-center py-2 rounded text-sm transition-opacity hover:opacity-90 disabled:opacity-50"
+        style={{ backgroundColor: "#c9a84c", color: "#0d0b07" }}
+      >
+        {loading ? "Loading..." : "Start Gold Trial"}
+      </button>
+      {error && <p className="mt-2 text-xs text-red-400 break-all">{error}</p>}
+    </>
   );
 }
 
