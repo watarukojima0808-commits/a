@@ -1,4 +1,33 @@
+"use client";
+
 import Link from "next/link";
+import { useState } from "react";
+
+function GoldButton() {
+  const [loading, setLoading] = useState(false);
+
+  async function handleClick() {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/create-checkout-session", { method: "POST" });
+      const { url } = await res.json();
+      window.location.href = url;
+    } catch {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <button
+      onClick={handleClick}
+      disabled={loading}
+      className="block w-full mt-8 text-center py-2 rounded text-sm transition-opacity hover:opacity-90 disabled:opacity-50"
+      style={{ backgroundColor: "#c9a84c", color: "#0d0b07" }}
+    >
+      {loading ? "Loading..." : "Start Gold Trial"}
+    </button>
+  );
+}
 
 function CrackSVG() {
   return (
@@ -115,10 +144,7 @@ export default function Home() {
               <li>✓ Weekly wisdom digest</li>
               <li>✓ Pattern insights across entries</li>
             </ul>
-            <Link href="/journal" className="block mt-8 text-center py-2 rounded text-sm transition-opacity hover:opacity-90"
-              style={{backgroundColor: '#c9a84c', color: '#0d0b07'}}>
-              Start Gold Trial
-            </Link>
+            <GoldButton />
           </div>
         </div>
       </section>
