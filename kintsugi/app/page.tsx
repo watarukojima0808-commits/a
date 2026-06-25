@@ -29,7 +29,7 @@ function GoldButton() {
         className="block w-full mt-8 text-center py-2 rounded text-sm transition-opacity hover:opacity-90 disabled:opacity-50"
         style={{ backgroundColor: "#c9a84c", color: "#0d0b07" }}
       >
-        {loading ? "Loading..." : "Start Gold Trial"}
+        {loading ? "読み込み中..." : "Goldトライアルを始める"}
       </button>
       {error && <p className="mt-2 text-xs text-red-400 break-all">{error}</p>}
     </>
@@ -57,11 +57,10 @@ export default function Home() {
         <div className="text-xl tracking-widest" style={{color: '#c9a84c'}}>金継ぎ · KINTSUGI</div>
         <div className="flex items-center gap-6">
           <Link href="/journal" className="text-sm opacity-70 hover:opacity-100 transition-opacity" style={{color: '#e8e0d0'}}>
-            Open Journal
+            ジャーナルを開く
           </Link>
-          <Link href="/journal" className="text-sm px-4 py-2 rounded border transition-colors hover:text-black" style={{borderColor: '#c9a84c', color: '#c9a84c', backgroundColor: 'transparent'}}
-            onMouseEnter={undefined}>
-            Start Free →
+          <Link href="/journal" className="text-sm px-4 py-2 rounded border transition-colors" style={{borderColor: '#c9a84c', color: '#c9a84c'}}>
+            無料で始める →
           </Link>
         </div>
       </nav>
@@ -70,43 +69,43 @@ export default function Home() {
       <section className="max-w-4xl mx-auto px-8 py-24 text-center">
         <CrackSVG />
         <p className="text-sm tracking-[0.3em] uppercase mb-4 opacity-50" style={{color: '#c9a84c'}}>
-          The AI Failure Journal
+          AI失敗ジャーナル
         </p>
         <h1 className="text-5xl font-light leading-tight mb-6" style={{color: '#e8e0d0'}}>
-          Your failures are not scars.<br />
-          <span style={{color: '#c9a84c'}}>They are gilded cracks.</span>
+          失敗は傷ではない。<br />
+          <span style={{color: '#c9a84c'}}>それは金の亀裂だ。</span>
         </h1>
         <p className="text-lg opacity-60 max-w-xl mx-auto mb-12 leading-relaxed">
-          Kintsugi is the Japanese art of repairing broken pottery with gold —
-          making it more beautiful for having been broken. This journal does the same for your life.
+          金継ぎとは、壊れた陶器を金で修復する日本の芸術——
+          壊れたことで、より美しくなる。このジャーナルはあなたの人生に同じことをします。
         </p>
         <Link href="/journal"
           className="inline-block px-8 py-4 text-sm tracking-widest uppercase transition-all hover:opacity-90"
           style={{backgroundColor: '#c9a84c', color: '#0d0b07', borderRadius: '2px'}}>
-          Begin Your Practice
+          実践を始める
         </Link>
-        <p className="text-xs mt-4 opacity-30">Free forever · No account required · Your data stays in your browser</p>
+        <p className="text-xs mt-4 opacity-30">永久無料 · アカウント不要 · データはブラウザに保存</p>
       </section>
 
       {/* How it works */}
       <section className="max-w-4xl mx-auto px-8 py-16 border-t" style={{borderColor: '#1a1710'}}>
-        <h2 className="text-center text-2xl font-light mb-16" style={{color: '#c9a84c'}}>The Practice</h2>
+        <h2 className="text-center text-2xl font-light mb-16" style={{color: '#c9a84c'}}>実践の流れ</h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-12">
           {[
             {
               num: "一",
-              title: "Write the Break",
-              desc: "Describe your failure, setback, or mistake honestly. Don't soften it. The gold only shows in honest cracks."
+              title: "亀裂を書く",
+              desc: "失敗、挫折、ミスを正直に書いてください。和らげないで。金は正直な亀裂にしか現れません。"
             },
             {
               num: "二",
-              title: "AI Finds the Gold",
-              desc: "Our AI reads your entry and uncovers the hidden wisdom — what you learned, how you grew, what strength emerged."
+              title: "AIが金を見つける",
+              desc: "AIがあなたのエントリーを読み、隠れた知恵を発掘します——何を学んだか、どう成長したか、どんな強さが生まれたか。"
             },
             {
               num: "三",
-              title: "Collect Your Cracks",
-              desc: "Over time, your failures become a gallery of growth. Each crack a golden thread in the tapestry of who you're becoming."
+              title: "亀裂を集める",
+              desc: "時間とともに、失敗はあなたの成長のギャラリーになります。それぞれの亀裂が、あなたになっていく物語の金の糸。"
             }
           ].map(step => (
             <div key={step.num} className="text-center">
@@ -120,36 +119,36 @@ export default function Home() {
 
       {/* Pricing */}
       <section className="max-w-4xl mx-auto px-8 py-16 border-t" style={{borderColor: '#1a1710'}}>
-        <h2 className="text-center text-2xl font-light mb-4" style={{color: '#c9a84c'}}>Simple Pricing</h2>
-        <p className="text-center text-sm opacity-40 mb-12">The core practice is always free.</p>
+        <h2 className="text-center text-2xl font-light mb-4" style={{color: '#c9a84c'}}>シンプルな料金</h2>
+        <p className="text-center text-sm opacity-40 mb-12">基本的な実践は常に無料です。</p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-2xl mx-auto">
           <div className="p-8 rounded border" style={{borderColor: '#252218', backgroundColor: '#111009'}}>
-            <div className="text-lg mb-2" style={{color: '#e8e0d0'}}>Free</div>
+            <div className="text-lg mb-2" style={{color: '#e8e0d0'}}>無料</div>
             <div className="text-3xl font-light mb-6" style={{color: '#c9a84c'}}>$0</div>
             <ul className="space-y-3 text-sm opacity-60">
-              <li>✓ Unlimited journal entries</li>
-              <li>✓ AI gold-finding (5/month)</li>
-              <li>✓ Local browser storage</li>
-              <li>✓ Visual crack gallery</li>
+              <li>✓ 無制限のジャーナルエントリー</li>
+              <li>✓ AI金発掘（月5回）</li>
+              <li>✓ ブラウザローカル保存</li>
+              <li>✓ ビジュアル亀裂ギャラリー</li>
             </ul>
             <Link href="/journal" className="block mt-8 text-center py-2 rounded border text-sm transition-opacity hover:opacity-80"
               style={{borderColor: '#c9a84c', color: '#c9a84c'}}>
-              Start Free
+              無料で始める
             </Link>
           </div>
           <div className="p-8 rounded border relative overflow-hidden" style={{borderColor: '#c9a84c', backgroundColor: '#111009'}}>
             <div className="absolute top-3 right-3 text-xs px-2 py-1 rounded" style={{backgroundColor: '#c9a84c', color: '#0d0b07'}}>
-              Popular
+              人気
             </div>
             <div className="text-lg mb-2" style={{color: '#e8e0d0'}}>Gold</div>
-            <div className="text-3xl font-light mb-1" style={{color: '#c9a84c'}}>$5<span className="text-sm opacity-60">/mo</span></div>
-            <div className="text-xs opacity-30 mb-6">$45/year · save 25%</div>
+            <div className="text-3xl font-light mb-1" style={{color: '#c9a84c'}}>$5<span className="text-sm opacity-60">/月</span></div>
+            <div className="text-xs opacity-30 mb-6">$45/年 · 25%お得</div>
             <ul className="space-y-3 text-sm opacity-60">
-              <li>✓ Everything in Free</li>
-              <li>✓ Unlimited AI analysis</li>
-              <li>✓ Cloud sync & backup</li>
-              <li>✓ Weekly wisdom digest</li>
-              <li>✓ Pattern insights across entries</li>
+              <li>✓ 無料プランのすべて</li>
+              <li>✓ AI分析無制限</li>
+              <li>✓ クラウド同期・バックアップ</li>
+              <li>✓ 週次知恵ダイジェスト</li>
+              <li>✓ エントリー横断のパターン分析</li>
             </ul>
             <GoldButton />
           </div>
@@ -160,15 +159,15 @@ export default function Home() {
       <section className="py-20 text-center">
         <blockquote className="max-w-lg mx-auto px-8">
           <p className="text-xl font-light italic opacity-60 leading-relaxed">
-            &ldquo;What seems to us as bitter trials are often blessings in disguise.&rdquo;
+            &ldquo;苦い試練に見えるものは、しばしば変装した祝福である。&rdquo;
           </p>
-          <footer className="mt-4 text-xs tracking-widest uppercase opacity-30">Oscar Wilde</footer>
+          <footer className="mt-4 text-xs tracking-widest uppercase opacity-30">オスカー・ワイルド</footer>
         </blockquote>
       </section>
 
       {/* Footer */}
       <footer className="border-t py-8 text-center text-xs opacity-30" style={{borderColor: '#1a1710'}}>
-        <p>Kintsugi Journal · Made with care · 金継ぎ</p>
+        <p>金継ぎジャーナル · 丁寧に作られました · 金継ぎ</p>
       </footer>
     </div>
   );
