@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+:root {
+  --gold: #c9a84c;
+  --gold-light: #f0d080;
+  --dark: #0d0b07;
+  --dark-2: #1a1710;
+  --dark-3: #252218;
+}
+
+body {
+  background-color: var(--dark);
+  color: #e8e0d0;
+  font-family: 'Georgia', serif;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in-up {
+  animation: fadeInUp 0.6s ease forwards;
+}
+
+@keyframes goldPulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+.gold-pulse {
+  animation: goldPulse 3s ease-in-out infinite;
+}
+
+.crack-line {
+  stroke: #c9a84c;
+  stroke-width: 1.5;
+  fill: none;
+  stroke-dasharray: 300;
+  stroke-dashoffset: 300;
+  animation: drawCrack 2s ease forwards;
+}
+
+@keyframes drawCrack {
+  to { stroke-dashoffset: 0; }
+}
+
+.scrollbar-gold::-webkit-scrollbar {
+  width: 4px;
+}
+.scrollbar-gold::-webkit-scrollbar-track {
+  background: var(--dark-2);
+}
+.scrollbar-gold::-webkit-scrollbar-thumb {
+  background: var(--gold);
+  border-radius: 2px;
+}
