@@ -47,6 +47,23 @@ function CrackIcon({ size = 20 }: { size?: number }) {
   );
 }
 
+const FREE_LIMIT = 5;
+
+function getUsageKey() {
+  const now = new Date();
+  return `kintsugi-usage-${now.getFullYear()}-${now.getMonth() + 1}`;
+}
+
+function getMonthlyUsage(): number {
+  return parseInt(localStorage.getItem(getUsageKey()) || "0", 10);
+}
+
+function incrementUsage() {
+  const key = getUsageKey();
+  const current = getMonthlyUsage();
+  localStorage.setItem(key, String(current + 1));
+}
+
 export default function JournalPage() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [currentText, setCurrentText] = useState("");
@@ -54,12 +71,14 @@ export default function JournalPage() {
   const [selected, setSelected] = useState<Entry | null>(null);
   const [view, setView] = useState<"write" | "gallery">("write");
   const [error, setError] = useState("");
+  const [monthlyUsage, setMonthlyUsage] = useState(0);
 
   useEffect(() => {
     const saved = localStorage.getItem("kintsugi-entries");
     if (saved) {
       setEntries(JSON.parse(saved));
     }
+    setMonthlyUsage(getMonthlyUsage());
   }, []);
 
   function saveEntries(updated: Entry[]) {
@@ -83,6 +102,18 @@ export default function JournalPage() {
       createdAt: Date.now(),
     };
 
+    const usage = getMonthlyUsage();
+    if (usage >= FREE_LIMIT) {
+      setError("今月の無料AI分析（5回）を使い切りました。Goldプランで無制限に使えます。");
+      setLoading(false);
+      const updated = [newEntry, ...entries];
+      saveEntries(updated);
+      setCurrentText("");
+      setSelected(newEntry);
+      setView("gallery");
+      return;
+    }
+
     try {
       const res = await fetch("/api/analyze", {
         method: "POST",
@@ -93,8 +124,9 @@ export default function JournalPage() {
       if (!res.ok) throw new Error("API error");
       const gold: GoldAnalysis = await res.json();
       newEntry.gold = gold;
+      incrementUsage();
+      setMonthlyUsage(getMonthlyUsage());
     } catch {
-      // Save without gold if API fails
       setError("AI analysis unavailable — entry saved without gold.");
     }
 
@@ -175,6 +207,13 @@ export default function JournalPage() {
               <p className="text-sm mt-2 opacity-40">
                 Write honestly. The more real, the more gold we can find.
               </p>
+              <div className="mt-2 text-xs" style={{ color: monthlyUsage >= FREE_LIMIT ? "#c9a84c" : "#c9a84c", opacity: 0.6 }}>
+                {monthlyUsage >= FREE_LIMIT ? (
+                  <span>今月の無料AI分析を使い切りました（{FREE_LIMIT}/{FREE_LIMIT}）— <a href="/" style={{ textDecoration: "underline" }}>Goldにアップグレード</a></span>
+                ) : (
+                  <span>今月の無料AI分析: {monthlyUsage}/{FREE_LIMIT}回使用</span>
+                )}
+              </div>
             </div>
 
             <textarea
