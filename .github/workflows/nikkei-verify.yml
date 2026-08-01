@@ -1,0 +1,45 @@
+name: 選定結果の検証
+
+# 手動起動のみ。溜まったレポートを実際の株価で答え合わせする。
+# Actions タブ →「選定結果の検証」→ Run workflow で実行できる。
+on:
+  workflow_dispatch:
+    inputs:
+      top:
+        description: '各日の上位何銘柄を検証するか (0 = 全件)'
+        required: false
+        default: '0'
+      cost:
+        description: '往復の手数料+スリッページ (%)'
+        required: false
+        default: '0.1'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 検証を実行
+        run: |
+          python nikkei_verify.py \
+            --top "${{ inputs.top }}" \
+            --cost-pct "${{ inputs.cost }}" \
+            --detail | tee result.txt
+
+      # 実行ログを開かなくても結果が読めるように、サマリ画面へ流し込む。
+      - name: 結果をサマリに表示
+        if: always()
+        run: |
+          {
+            echo '## 検証結果'
+            echo '```'
+            cat result.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

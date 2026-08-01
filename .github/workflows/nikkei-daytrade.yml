@@ -27,10 +27,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 構成銘柄の入れ替えに追随する。日経側がブロックしても同梱スナップショットで継続する。
+      # 構成銘柄の入れ替えに追随する。取得できなければ同梱スナップショットで継続するため、
+      # ここの失敗は異常ではない。赤いエラー注釈が出ると本当の失敗と紛らわしいので握りつぶす。
       - name: 構成銘柄リストを更新
-        continue-on-error: true
-        run: python nikkei_daytrade.py --update-list
+        run: |
+          python nikkei_daytrade.py --update-list \
+            || echo "::notice::銘柄リストを更新できませんでした。同梱リストで続行します。"
 
       - name: スクリーニング実行
         env:
