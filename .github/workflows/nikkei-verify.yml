@@ -28,10 +28,13 @@ jobs:
 
       - name: 検証を実行
         run: |
+          # pipefail が無いと python が落ちても tee の成功で緑になる。
+          # 2>&1 はエラー本文をサマリに載せるため (stderr は tee を通らない)。
+          set -o pipefail
           python nikkei_verify.py \
             --top "${{ inputs.top }}" \
             --cost-pct "${{ inputs.cost }}" \
-            --detail | tee result.txt
+            --detail 2>&1 | tee result.txt
 
       # 実行ログを開かなくても結果が読めるように、サマリ画面へ流し込む。
       - name: 結果をサマリに表示
