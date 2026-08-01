@@ -88,7 +88,61 @@ python nikkei_daytrade.py --out-dir reports \
 `--out-dir` を指定すると、各銘柄の前日レンジ・想定変動幅（ATR）・20日高安値を
 含んだMarkdownレポートも保存されます。
 
-## 毎朝8:45に自動実行する
+## 毎朝自動で実行する（GitHub Actions）
+
+`.github/workflows/nikkei-daytrade.yml` を同梱しています。GitHubのサーバーが平日の朝に実行するため、
+自分のPCの電源が入っている必要はありません。publicリポジトリなので無料枠の消費もありません。
+
+### 設定手順
+
+**1. ワークフローをデフォルトブランチに置く**
+
+GitHubの仕様上、スケジュール実行は**デフォルトブランチにあるワークフローしか動きません**。
+このブランチをデフォルトブランチにマージしてください。
+
+**2. Gmailアプリパスワードを取得する**
+
+通常のGmailパスワードでは送信できません。2段階認証を有効にしたうえで、
+[Googleアカウントのアプリパスワード](https://myaccount.google.com/apppasswords) で16桁のパスワードを発行します。
+
+**3. GitHub Secrets に登録する**
+
+リポジトリの Settings → Secrets and variables → Actions → New repository secret で3つ登録します。
+
+| Secret名 | 値 |
+|----------|-----|
+| `GMAIL_FROM` | 送信元のGmailアドレス |
+| `GMAIL_TO` | 受信したいメールアドレス |
+| `GMAIL_PASSWORD` | 手順2で発行した16桁のアプリパスワード |
+
+Secretsは暗号化され、ログにも表示されません。publicリポジトリでも他人から読み取られることはありません。
+
+**4. 動作確認する**
+
+Actions タブ →「日経225 デイトレ候補」→ Run workflow で手動実行できます。
+スケジュールを待たずにメールが届くか確認してください。
+
+### 実行タイミング
+
+平日 **8:20 JST**（UTC 23:20）に設定しています。8:45ではなく8:20にしているのは、
+GitHubのスケジュール実行が混雑時に5〜20分ほど遅延することがあるためで、
+寄り付き（9:00）までに確実にメールが届くようにするための余裕です。
+
+早すぎる・遅すぎる場合は `.github/workflows/nikkei-daytrade.yml` の `cron` を調整してください。
+**UTC指定**なので、JSTから9時間引いた値を書きます（曜日も前日にずれます）。
+
+### 実行結果の保存
+
+毎回のレポートは `reports/YYYY-MM-DD.md` としてリポジトリにも自動コミットされます。
+過去の選定結果が残るので、後から「このスコアは当たっていたか」を検証できます。
+
+### 注意事項
+
+- **祝日も実行されます。** 日本の祝日判定は入れていないため、休場日には前営業日と同じ内容のメールが届きます
+- **60日間リポジトリに動きがないと、GitHubはスケジュール実行を自動停止します。** 毎日のレポート自動コミットで動きは発生しますが、確実に防げる保証はありません。しばらくメールが来ないと感じたらActionsタブを確認してください
+- **Yahoo Finance がクラウドのIPを制限する可能性があります。** 取得成功率が60%を下回るとワークフローは失敗し、GitHubから通知メールが届きます。頻発する場合は下記のPC実行に切り替えてください
+
+## PCで自動実行する（GitHub Actionsを使わない場合）
 
 ### macOS / Linux（cron）
 
@@ -100,8 +154,17 @@ python nikkei_daytrade.py --out-dir reports \
 
 cronはOSのローカルタイムで動くため、マシンのタイムゾーンがJSTになっていることを確認してください（`date` で確認）。
 
-Gmail通知も併用するなら、パスワードをコマンドラインに直接書かず、
-シェルスクリプトにまとめて権限を絞る（`chmod 600`）のが安全です。
+Gmail通知も使う場合は、パスワードをcronの行に直接書かず環境変数で渡してください。
+
+```bash
+GMAIL_FROM=you@gmail.com
+GMAIL_TO=you@gmail.com
+GMAIL_PASSWORD=xxxxxxxxxxxxxxxx
+45 8 * * 1-5 cd /path/to/repo && /usr/bin/python3 nikkei_daytrade.py --out-dir reports >> screener.log 2>&1
+```
+
+`--gmail-from` などのオプションでも指定できますが、その場合は同じマシンの他ユーザーから
+プロセス一覧（`ps`）でパスワードが見えてしまう点に注意してください。
 
 ### Windows（タスクスケジューラ）
 

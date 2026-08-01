@@ -305,7 +305,7 @@ def print_console(picks: list[dict], stats: dict) -> None:
     print()
 
 
-def send_gmail(sender: str, to: str, password: str, subject: str, body: str) -> None:
+def send_gmail(sender: str, to: str, password: str, subject: str, body: str) -> bool:
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = sender
@@ -314,9 +314,11 @@ def send_gmail(sender: str, to: str, password: str, subject: str, body: str) -> 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
             smtp.login(sender, password)
             smtp.send_message(msg)
-        print("[Gmail] 送信完了")
+        print(f"[Gmail] {to} に送信しました。")
+        return True
     except Exception as e:
         print(f"[Gmail] 送信失敗: {e}")
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -350,6 +352,15 @@ def run(args: argparse.Namespace) -> None:
     if not results:
         sys.exit("株価データを取得できませんでした。ネットワーク接続を確認してください。")
 
+    # 大半が取得できていない状態のランキングは母集団が偏るため、出さずに落とす。
+    success_rate = len(results) / len(codes)
+    if success_rate < args.min_success_rate:
+        sys.exit(
+            f"取得成功率 {success_rate:.0%} が下限 {args.min_success_rate:.0%} を下回りました "
+            f"({len(results)}/{len(codes)} 銘柄)。レート制限の可能性があります。"
+            "--workers を下げるか、時間をおいて再実行してください。"
+        )
+
     passed = [
         m for m in results
         if m["atr_pct"] >= args.min_atr
@@ -380,7 +391,9 @@ def run(args: argparse.Namespace) -> None:
 
     if args.gmail_from:
         subject = f"【日経225 デイトレ候補】{datetime.now(JST):%m/%d} 上位{len(picks)}銘柄"
-        send_gmail(args.gmail_from, args.gmail_to, args.gmail_password, subject, report)
+        if not send_gmail(args.gmail_from, args.gmail_to, args.gmail_password, subject, report):
+            # 自動実行では送信失敗が唯一の異常サインになるため、黙って成功扱いにしない。
+            sys.exit("メール送信に失敗しました。")
 
 
 def main() -> None:
@@ -402,10 +415,11 @@ def main() -> None:
     parser.add_argument("--codes-file", default=DEFAULT_LIST, metavar="パス", help="銘柄リストCSV (code,name)")
     parser.add_argument("--out-dir", metavar="パス", help="Markdownレポートの保存先ディレクトリ")
     parser.add_argument("--workers", type=int, default=6, metavar="数", help="並列取得数 (デフォルト: 6)")
+    parser.add_argument("--min-success-rate", type=float, default=0.6, metavar="割合", help="許容する最低取得成功率 (デフォルト: 0.6)")
     parser.add_argument("--update-list", action="store_true", help="日経公式から構成銘柄リストを更新して終了")
-    parser.add_argument("--gmail-from", metavar="アドレス", help="送信元Gmailアドレス")
-    parser.add_argument("--gmail-to", metavar="アドレス", help="送信先メールアドレス")
-    parser.add_argument("--gmail-password", metavar="パスワード", help="Gmailアプリパスワード (16桁)")
+    parser.add_argument("--gmail-from", default=os.environ.get("GMAIL_FROM"), metavar="アドレス", help="送信元Gmailアドレス (環境変数 GMAIL_FROM)")
+    parser.add_argument("--gmail-to", default=os.environ.get("GMAIL_TO"), metavar="アドレス", help="送信先メールアドレス (環境変数 GMAIL_TO)")
+    parser.add_argument("--gmail-password", default=os.environ.get("GMAIL_PASSWORD"), metavar="パスワード", help="Gmailアプリパスワード (環境変数 GMAIL_PASSWORD)")
     args = parser.parse_args()
 
     if args.update_list:

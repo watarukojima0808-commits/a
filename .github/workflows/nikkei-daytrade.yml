@@ -1,0 +1,53 @@
+name: 日経225 デイトレ候補
+
+on:
+  schedule:
+    # 平日 8:20 JST (= UTC 23:20 日〜木)。
+    # GitHubのスケジュールは混雑時に数分〜20分遅延するため、寄り付き(9:00)まで余裕を取っている。
+    - cron: '20 23 * * 0-4'
+  workflow_dispatch:
+
+# 同時実行を防ぐ (手動実行とスケジュールが重なった場合の push 衝突対策)
+concurrency:
+  group: nikkei-daytrade
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 構成銘柄の入れ替えに追随する。日経側がブロックしても同梱スナップショットで継続する。
+      - name: 構成銘柄リストを更新
+        continue-on-error: true
+        run: python nikkei_daytrade.py --update-list
+
+      - name: スクリーニング実行
+        env:
+          GMAIL_FROM: ${{ secrets.GMAIL_FROM }}
+          GMAIL_TO: ${{ secrets.GMAIL_TO }}
+          GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+        run: python nikkei_daytrade.py --out-dir reports --workers 4
+
+      # 過去の選定結果を残し、後からスコアの当たり外れを検証できるようにする。
+      - name: 結果をコミット
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports data/nikkei225.csv
+          if git diff --staged --quiet; then
+            echo "変更なし"
+          else
+            git commit -m "スクリーニング結果 $(TZ=Asia/Tokyo date +%Y-%m-%d)"
+            git push
+          fi
