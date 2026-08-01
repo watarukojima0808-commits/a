@@ -27,7 +27,7 @@ from email.mime.text import MIMEText
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
-CHART_API = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.T?range=6mo&interval=1d"
+CHART_API = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range}&interval=1d"
 NIKKEI_COMPONENTS = "https://indexes.nikkei.co.jp/nkave/index/component?idx=nk225"
 
 HEADERS = {
@@ -131,8 +131,13 @@ class Bar:
         self.date, self.o, self.h, self.l, self.c, self.v = date, o, h, l, c, v
 
 
-def fetch_bars(code: str) -> list[Bar]:
-    data = json.loads(http_get(CHART_API.format(symbol=code)))
+def fetch_bars(code: str, range_: str = "6mo") -> list[Bar]:
+    """4桁の証券コードを東証銘柄として取得する。指数は fetch_symbol を使う。"""
+    return fetch_symbol(f"{code}.T", range_)
+
+
+def fetch_symbol(symbol: str, range_: str = "6mo") -> list[Bar]:
+    data = json.loads(http_get(CHART_API.format(symbol=symbol, range=range_)))
     result = data.get("chart", {}).get("result")
     if not result:
         return []
@@ -385,10 +390,22 @@ def run(args: argparse.Namespace) -> None:
 
     if args.out_dir:
         os.makedirs(args.out_dir, exist_ok=True)
-        path = os.path.join(args.out_dir, f"{datetime.now(JST):%Y-%m-%d}.md")
-        with open(path, "w", encoding="utf-8") as f:
+        stem = os.path.join(args.out_dir, f"{datetime.now(JST):%Y-%m-%d}")
+        with open(f"{stem}.md", "w", encoding="utf-8") as f:
             f.write(report)
-        print(f"レポートを保存しました: {path}")
+        # 検証スクリプトが後から読む用。人間向けのMarkdownを解析させずに済ませる。
+        with open(f"{stem}.json", "w", encoding="utf-8") as f:
+            json.dump({
+                "generated": datetime.now(JST).isoformat(timespec="seconds"),
+                "data_date": stats["data_date"],
+                "analyzed": stats["analyzed"],
+                "passed": stats["passed"],
+                "picks": [
+                    {k: m[k] for k in ("code", "name", "close", "score", "atr_pct", "vol_ratio", "ret1")}
+                    for m in picks
+                ],
+            }, f, ensure_ascii=False, indent=1)
+        print(f"レポートを保存しました: {stem}.md / {stem}.json")
 
     if args.gmail_from:
         subject = f"【日経225 デイトレ候補】{datetime.now(JST):%m/%d} 上位{len(picks)}銘柄"
