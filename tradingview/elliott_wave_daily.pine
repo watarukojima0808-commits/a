@@ -1,0 +1,357 @@
+//@version=5
+// ============================================================================
+// エリオット波動 自動カウント [日足向け] / Elliott Wave Auto Count (Daily)
+// ----------------------------------------------------------------------------
+// ・ジグザグ(ピボット)で波を検出し、エリオット波動の基本3原則を満たす
+//   推進5波(1-2-3-4-5)と、その後の修正波(A-B-C)を自動でラベリングします。
+//     原則1: 波2は波1の起点を割り込まない
+//     原則2: 波3は 1・3・5 波の中で最短にならない
+//     原則3: 波4は波1の価格領域に重ならない(ダイアゴナルは設定で許容可)
+// ・フィボナッチ比率による「次の波」の目標値ラインを表示します。
+// ・日足での使用を想定したデフォルト設定です(他の時間足でも動作します)。
+// ・注意: ピボットは右側に「感度」本数のバーが確定してから成立するため、
+//   直近の波のラベルは確定までに遅延があります(ジグザグ系の宿命です)。
+//   本スクリプトは分析補助であり、投資助言ではありません。
+// ============================================================================
+indicator("エリオット波動 自動カウント [日足向け]", shorttitle="EW 日足", overlay=true, max_labels_count=500, max_lines_count=500)
+
+//================================ 入力 ================================
+grpZZ = "波の検出(ジグザグ)"
+len    = input.int(13, "ピボット感度(左右のバー数)", minval=2, group=grpZZ, tooltip="日足では 8〜21 が目安。大きいほど大きな波だけを検出します。")
+devPct = input.float(4.0, "最小スイング幅(%)", minval=0.0, step=0.5, group=grpZZ, tooltip="直前のピボットからこの割合以上動いたスイングだけを波として採用します。個別株なら 4〜8%、指数なら 3〜5% が目安。")
+
+grpEW = "エリオット波動ルール"
+allowOverlap = input.bool(false, "波4が波1の領域に重なるのを許容(ダイアゴナル)", group=grpEW)
+allowTrunc   = input.bool(false, "波5のトランケーション(波3を超えない5波)を許容", group=grpEW)
+showABC      = input.bool(true, "修正波 A-B-C を表示", group=grpEW)
+
+grpFib = "フィボナッチ目標値"
+showFib = input.bool(true, "次の波の目標値ラインを表示", group=grpFib)
+
+grpBig = "上位度合いの波"
+showBig = input.bool(true, "上位度合いのジグザグを表示", group=grpBig)
+bigLen  = input.int(34, "上位ピボット感度(左右のバー数)", minval=5, group=grpBig)
+
+grpSty = "表示スタイル"
+colUp     = input.color(#089981, "上昇スイングの色", group=grpSty)
+colDn     = input.color(#f23645, "下降スイングの色", group=grpSty)
+colImp    = input.color(#2962ff, "推進波(1-5)ラベル色", group=grpSty)
+colCor    = input.color(#ff9800, "修正波(A-B-C)ラベル色", group=grpSty)
+colProv   = input.color(#787b86, "暫定カウント(?付き)の色", group=grpSty)
+colFib    = input.color(#787b86, "目標ラインの色", group=grpSty)
+colBig    = input.color(color.new(#9598a1, 55), "上位度合いの線色", group=grpSty)
+showTable = input.bool(true, "状況パネルを表示", group=grpSty)
+
+// 保持する最大ピボット数(古いものから破棄)
+int MAXPV = 40
+
+//============================ 内部状態 ============================
+// メインのジグザグ(dir: 1=高値ピボット, -1=安値ピボット)
+var pvPrice = array.new_float()
+var pvBar   = array.new_int()
+var pvDir   = array.new_int()
+// 上位度合いのジグザグ
+var bgPrice = array.new_float()
+var bgBar   = array.new_int()
+var bgDir   = array.new_int()
+// 描画オブジェクト
+var zzLines   = array.new<line>()
+var ewLabels  = array.new<label>()
+var fibLines  = array.new<line>()
+var fibLabels = array.new<label>()
+var bigLines  = array.new<line>()
+
+//============================ 関数 ============================
+f_pct(float a, float b) =>
+    b == 0.0 ? 0.0 : math.abs(a - b) / math.abs(b) * 100.0
+
+// ジグザグ配列を更新する。配列に変化があれば true を返す。
+// 同方向のピボットはより極端な値で置き換え、逆方向は最小スイング幅を
+// 満たした場合のみ新しい波として追加する。
+f_addPivot(array<float> prices, array<int> bars, array<int> dirs, float price, int b, int dir, float minDev, int maxN) =>
+    bool ch = false
+    int n = array.size(prices)
+    if n == 0
+        array.push(prices, price)
+        array.push(bars, b)
+        array.push(dirs, dir)
+        ch := true
+    else
+        float lastP = array.get(prices, n - 1)
+        int   lastD = array.get(dirs, n - 1)
+        if dir == lastD
+            if (dir == 1 and price > lastP) or (dir == -1 and price < lastP)
+                array.set(prices, n - 1, price)
+                array.set(bars, n - 1, b)
+                ch := true
+        else if f_pct(price, lastP) >= minDev
+            array.push(prices, price)
+            array.push(bars, b)
+            array.push(dirs, dir)
+            ch := true
+    while array.size(prices) > maxN
+        array.shift(prices)
+        array.shift(bars)
+        array.shift(dirs)
+    ch
+
+// ピボット i を起点(波0)とする6点がエリオット推進波の原則を満たすか
+f_impulseOK(int i) =>
+    float p0 = array.get(pvPrice, i)
+    float p1 = array.get(pvPrice, i + 1)
+    float p2 = array.get(pvPrice, i + 2)
+    float p3 = array.get(pvPrice, i + 3)
+    float p4 = array.get(pvPrice, i + 4)
+    float p5 = array.get(pvPrice, i + 5)
+    bool up = array.get(pvDir, i) == -1
+    float w1 = math.abs(p1 - p0)
+    float w3 = math.abs(p3 - p2)
+    float w5 = math.abs(p5 - p4)
+    bool notShortest = not (w3 <= w1 and w3 <= w5)
+    bool ok = false
+    if up
+        bool r1 = p1 > p0
+        bool r2 = p2 < p1 and p2 > p0
+        bool r3 = p3 > p1
+        bool r4 = p4 < p3 and (allowOverlap or p4 > p1)
+        bool r5 = allowTrunc ? p5 > p4 : p5 > p3
+        ok := r1 and r2 and r3 and r4 and r5 and notShortest
+    else
+        bool r1 = p1 < p0
+        bool r2 = p2 > p1 and p2 < p0
+        bool r3 = p3 < p1
+        bool r4 = p4 > p3 and (allowOverlap or p4 < p1)
+        bool r5 = allowTrunc ? p5 < p4 : p5 < p3
+        ok := r1 and r2 and r3 and r4 and r5 and notShortest
+    [ok, up]
+
+// 最も新しい(起点が最も右にある)推進波を探す
+f_findImpulse() =>
+    int found = -1
+    bool foundUp = false
+    int n = array.size(pvPrice)
+    if n >= 6
+        for i = 0 to n - 6
+            [ok, up] = f_impulseOK(i)
+            if ok
+                found := i
+                foundUp := up
+    [found, foundUp]
+
+// 直近3ピボットが「波1-波2」の形か(波3進行中の候補)
+f_partial12() =>
+    int n = array.size(pvPrice)
+    bool ok = false
+    bool up = false
+    if n >= 3
+        float p0 = array.get(pvPrice, n - 3)
+        float p1 = array.get(pvPrice, n - 2)
+        float p2 = array.get(pvPrice, n - 1)
+        up := array.get(pvDir, n - 3) == -1
+        ok := up ? (p1 > p0 and p2 < p1 and p2 > p0) : (p1 < p0 and p2 > p1 and p2 < p0)
+    [ok, up]
+
+// 直近5ピボットが「波1〜波4」の形か(波5進行中の候補)
+f_partial1234() =>
+    int n = array.size(pvPrice)
+    bool ok = false
+    bool up = false
+    if n >= 5
+        int i = n - 5
+        float p0 = array.get(pvPrice, i)
+        float p1 = array.get(pvPrice, i + 1)
+        float p2 = array.get(pvPrice, i + 2)
+        float p3 = array.get(pvPrice, i + 3)
+        float p4 = array.get(pvPrice, i + 4)
+        up := array.get(pvDir, i) == -1
+        if up
+            ok := p1 > p0 and p2 < p1 and p2 > p0 and p3 > p1 and p4 < p3 and (allowOverlap or p4 > p1)
+        else
+            ok := p1 < p0 and p2 > p1 and p2 < p0 and p3 < p1 and p4 > p3 and (allowOverlap or p4 < p1)
+    [ok, up]
+
+f_clearLines(array<line> a) =>
+    while array.size(a) > 0
+        line.delete(array.pop(a))
+
+f_clearLabels(array<label> a) =>
+    while array.size(a) > 0
+        label.delete(array.pop(a))
+
+// 目標値の水平ラインとラベルを描画
+f_target(int x1, int x2, float y, string txt) =>
+    array.push(fibLines, line.new(x1, y, x2, y, xloc=xloc.bar_index, color=colFib, style=line.style_dashed))
+    array.push(fibLabels, label.new(x2, y, txt, xloc=xloc.bar_index, style=label.style_label_left, color=color.new(colFib, 85), textcolor=colFib, size=size.small))
+
+// 波番号ラベルを描画
+f_waveLabel(int idx, string txt, color c) =>
+    float p = array.get(pvPrice, idx)
+    int   b = array.get(pvBar, idx)
+    bool isHigh = array.get(pvDir, idx) == 1
+    array.push(ewLabels, label.new(b, p, txt, xloc=xloc.bar_index, style=isHigh ? label.style_label_down : label.style_label_up, color=c, textcolor=color.white, size=size.normal))
+
+//============================ ピボット検出 ============================
+float ph  = ta.pivothigh(high, len, len)
+float pl  = ta.pivotlow(low, len, len)
+float ph2 = ta.pivothigh(high, bigLen, bigLen)
+float pl2 = ta.pivotlow(low, bigLen, bigLen)
+
+bool changed = false
+if not na(ph)
+    changed := f_addPivot(pvPrice, pvBar, pvDir, ph, bar_index - len, 1, devPct, MAXPV) or changed
+if not na(pl)
+    changed := f_addPivot(pvPrice, pvBar, pvDir, pl, bar_index - len, -1, devPct, MAXPV) or changed
+
+bool changedBig = false
+if showBig
+    if not na(ph2)
+        changedBig := f_addPivot(bgPrice, bgBar, bgDir, ph2, bar_index - bigLen, 1, devPct, MAXPV) or changedBig
+    if not na(pl2)
+        changedBig := f_addPivot(bgPrice, bgBar, bgDir, pl2, bar_index - bigLen, -1, devPct, MAXPV) or changedBig
+
+//============================ カウントと描画 ============================
+var string phase     = "データ蓄積中…"
+var string direction = "-"
+var string prevPhase = ""
+var int lastImpEnd   = -1
+bool sigImpulse = false
+bool sigPhase   = false
+
+if changed
+    f_clearLines(zzLines)
+    f_clearLabels(ewLabels)
+    f_clearLines(fibLines)
+    f_clearLabels(fibLabels)
+
+    int n = array.size(pvPrice)
+
+    // ジグザグ線
+    if n >= 2
+        for i = 0 to n - 2
+            float pA = array.get(pvPrice, i)
+            float pB = array.get(pvPrice, i + 1)
+            int bA = array.get(pvBar, i)
+            int bB = array.get(pvBar, i + 1)
+            array.push(zzLines, line.new(bA, pA, bB, pB, xloc=xloc.bar_index, color=pB > pA ? colUp : colDn, width=2))
+
+    [imp, impUp] = f_findImpulse()
+    [ok1234, up1234] = f_partial1234()
+    [ok12, up12] = f_partial12()
+
+    // 確定した推進波 1〜5 のラベル
+    if imp >= 0
+        for k = 0 to 5
+            f_waveLabel(imp + k, k == 0 ? "0" : str.tostring(k), k == 0 ? color.new(colImp, 55) : colImp)
+        // 続く修正波 A-B-C
+        if showABC
+            string[] abc = array.from("A", "B", "C")
+            for k = 0 to 2
+                int idx = imp + 6 + k
+                if idx < n
+                    f_waveLabel(idx, array.get(abc, k), colCor)
+        // 新しい推進波を検出したらアラート用フラグを立てる
+        int endB = array.get(pvBar, imp + 5)
+        if endB != lastImpEnd
+            lastImpEnd := endB
+            sigImpulse := true
+
+    // ---- フェーズ判定と目標値 ----
+    phase := "波を形成中(カウント不確定)"
+    direction := "-"
+    if n >= 1
+        int lastIdx = n - 1
+        float lastP = array.get(pvPrice, lastIdx)
+        int lastB = array.get(pvBar, lastIdx)
+        int extB = lastB + 40
+
+        int after = imp >= 0 ? lastIdx - (imp + 5) : -1
+
+        if imp >= 0 and after <= 3
+            direction := impUp ? "上昇" : "下降"
+            float p0 = array.get(pvPrice, imp)
+            float p5 = array.get(pvPrice, imp + 5)
+            float rng = p5 - p0
+            string rw = impUp ? "押し" : "戻り"
+            if after == 0
+                phase := impUp ? "上昇5波が完了 → 調整(A-B-C)に警戒" : "下降5波が完了 → 反発(A-B-C)に警戒"
+                if showFib
+                    f_target(lastB, extB, p5 - rng * 0.382, "38.2% " + rw)
+                    f_target(lastB, extB, p5 - rng * 0.500, "50.0% " + rw)
+                    f_target(lastB, extB, p5 - rng * 0.618, "61.8% " + rw)
+            else if after == 1
+                phase := "修正波A完了 → B波(戻り)の局面?"
+                if showFib
+                    f_target(lastB, extB, p5 - rng * 0.382, "38.2% " + rw)
+                    f_target(lastB, extB, p5 - rng * 0.500, "50.0% " + rw)
+                    f_target(lastB, extB, p5 - rng * 0.618, "61.8% " + rw)
+            else if after == 2
+                phase := "修正波B完了 → C波に警戒"
+                if showFib
+                    float pA = array.get(pvPrice, imp + 6)
+                    float pB = array.get(pvPrice, imp + 7)
+                    float wA = math.abs(p5 - pA)
+                    f_target(lastB, extB, impUp ? pB - wA : pB + wA, "C = A(等倍)")
+                    f_target(lastB, extB, impUp ? pB - wA * 1.618 : pB + wA * 1.618, "C = 1.618×A")
+            else
+                phase := "修正A-B-C完了候補 → 新たな推進波の起点?"
+        else if ok1234
+            direction := up1234 ? "上昇" : "下降"
+            phase := up1234 ? "上昇 第5波 進行中?" : "下降 第5波 進行中?"
+            int i5 = n - 5
+            float q0 = array.get(pvPrice, i5)
+            float q1 = array.get(pvPrice, i5 + 1)
+            float q3 = array.get(pvPrice, i5 + 3)
+            float q4 = array.get(pvPrice, i5 + 4)
+            float w1 = math.abs(q1 - q0)
+            float w03 = math.abs(q3 - q0)
+            // 暫定ラベル(確定前なので ? 付き)
+            if imp < 0 or i5 > imp + 8
+                for k = 1 to 4
+                    f_waveLabel(i5 + k, str.tostring(k) + "?", colProv)
+            if showFib
+                f_target(lastB, extB, up1234 ? q4 + w1 : q4 - w1, "5波 = 1波(等倍)")
+                f_target(lastB, extB, up1234 ? q4 + 0.618 * w03 : q4 - 0.618 * w03, "5波 = 0.618×(0→3)")
+        else if ok12
+            direction := up12 ? "上昇" : "下降"
+            phase := up12 ? "上昇 第3波 進行中?" : "下降 第3波 進行中?"
+            int i3 = n - 3
+            float q0 = array.get(pvPrice, i3)
+            float q1 = array.get(pvPrice, i3 + 1)
+            float q2 = array.get(pvPrice, i3 + 2)
+            float w1 = math.abs(q1 - q0)
+            if imp < 0 or i3 > imp + 8
+                f_waveLabel(i3 + 1, "1?", colProv)
+                f_waveLabel(i3 + 2, "2?", colProv)
+            if showFib
+                f_target(lastB, extB, up12 ? q2 + 1.618 * w1 : q2 - 1.618 * w1, "3波 = 1.618×1波")
+                f_target(lastB, extB, up12 ? q2 + 2.618 * w1 : q2 - 2.618 * w1, "3波 = 2.618×1波")
+
+    if phase != prevPhase
+        sigPhase := true
+        prevPhase := phase
+
+// 上位度合いのジグザグ描画
+if changedBig
+    f_clearLines(bigLines)
+    int m = array.size(bgPrice)
+    if m >= 2
+        for i = 0 to m - 2
+            array.push(bigLines, line.new(array.get(bgBar, i), array.get(bgPrice, i), array.get(bgBar, i + 1), array.get(bgPrice, i + 1), xloc=xloc.bar_index, color=colBig, width=4))
+
+//============================ 状況パネル ============================
+var table tbl = table.new(position.top_right, 2, 5, bgcolor=color.new(chart.bg_color, 15), border_width=1, border_color=color.new(#787b86, 70))
+if barstate.islast and showTable
+    table.cell(tbl, 0, 0, "エリオット波動", text_color=color.white, bgcolor=colImp, text_size=size.small)
+    table.cell(tbl, 1, 0, timeframe.isdaily ? "日足" : "※日足での使用を推奨", text_color=timeframe.isdaily ? color.white : color.yellow, bgcolor=colImp, text_size=size.small)
+    table.cell(tbl, 0, 1, "フェーズ", text_color=chart.fg_color, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 1, phase, text_color=chart.fg_color, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 0, 2, "方向", text_color=chart.fg_color, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 2, direction, text_color=direction == "上昇" ? colUp : direction == "下降" ? colDn : chart.fg_color, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 0, 3, "設定", text_color=chart.fg_color, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 1, 3, "感度 " + str.tostring(len) + " / 最小 " + str.tostring(devPct) + "%", text_color=chart.fg_color, text_size=size.small, text_halign=text.align_left)
+    table.cell(tbl, 0, 4, "※自動カウントは参考値です。確定には感度分の遅延があります。", text_color=color.new(chart.fg_color, 30), text_size=size.tiny, text_halign=text.align_left)
+    table.merge_cells(tbl, 0, 4, 1, 4)
+
+//============================ アラート ============================
+alertcondition(sigImpulse, "推進5波の完成を検出", "エリオット波動: 推進5波の完成を検出しました ({{ticker}} {{interval}})")
+alertcondition(sigPhase, "フェーズの変化を検出", "エリオット波動: カウントのフェーズが変化しました ({{ticker}} {{interval}})")
