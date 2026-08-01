@@ -127,13 +127,6 @@ def pad(text: str, width: int) -> str:
 
 def print_results(by_date: list[tuple[str, list[dict], float]], cost_pct: float, detail: bool) -> None:
     all_trades = [t for _, ts, _ in by_date for t in ts]
-    if not all_trades:
-        sys.exit(
-            "検証できる取引がありませんでした。\n"
-            "レポートの基準日より後の株価がまだ存在しない可能性があります"
-            "(直近のレポートしかない場合は、翌営業日の取引終了後に再実行してください)。"
-        )
-
     print()
     print("=" * 78)
     print(f" 検証結果  レポート {len(by_date)} 日分 / 延べ {len(all_trades)} 取引"
@@ -260,6 +253,18 @@ def main() -> None:
         bench = (bench_bar.c / bench_bar.o - 1) * 100 if bench_bar and bench_bar.o else 0.0
         if trades:
             by_date.append((rep["data_date"], trades, bench))
+
+    if not by_date:
+        # レポートを出した当日など、まだ翌営業日が来ていないだけの状態。
+        # 異常ではないので、赤い失敗にはせず理由だけ伝えて終わる。
+        latest = reports[-1]["data_date"]
+        print()
+        print("まだ検証できる取引がありません。")
+        print(f"  最新レポートの基準日 : {latest}")
+        print("  この翌営業日の取引が終わってから、もう一度実行してください。")
+        print(f"  溜まっているレポート : {len(reports)} 日分 (判定には20日分が必要です)")
+        print()
+        return
 
     print_results(by_date, args.cost_pct, args.detail)
 
