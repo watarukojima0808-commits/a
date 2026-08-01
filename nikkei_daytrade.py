@@ -312,7 +312,8 @@ def send_gmail(sender: str, to: str, password: str, subject: str, body: str) -> 
     msg["To"] = to
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            smtp.login(sender, password)
+            # アプリパスワードは "abcd efgh ijkl mnop" の形で表示されるため、空白付きで貼られがち。
+            smtp.login(sender, password.replace(" ", ""))
             smtp.send_message(msg)
         print(f"[Gmail] {to} に送信しました。")
         return True
