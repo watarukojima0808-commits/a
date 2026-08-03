@@ -6,6 +6,14 @@ on:
     # JPXの銘柄別信用取引週末残高は通常、翌週第2営業日 (火曜) の夕方に公表されるため、
     # その翌朝に実行して最新週まで反映させる。
     - cron: '0 23 * * 2'
+  # workflow_dispatch はデフォルトブランチに載るまで使えないため、
+  # 開発ブランチではスクリーナー本体の変更を push したら即実行して動作確認する。
+  push:
+    branches:
+      - 'claude/margin-buying-demand-stocks-8d35qb'
+    paths:
+      - 'margin_screener.py'
+      - '.github/workflows/margin-screener.yml'
   workflow_dispatch:
     inputs:
       inspect:
@@ -45,25 +53,32 @@ jobs:
       - name: xlrd をインストール (.xls 対応)
         run: pip install xlrd
 
+      # 先にファイル構造の確認だけ流しておくと、本実行が解析エラーで落ちたときに
+      # ログから原因 (JPXのレイアウト変更) を特定できる。
+      - name: JPXファイルの構造確認
+        run: python margin_screener.py --inspect 2>&1 | tee inspect.txt
+        continue-on-error: true
+
       - name: スクリーニング実行
+        if: inputs.inspect != 'true'
         run: |
           set -o pipefail
-          if [ "${{ inputs.inspect }}" = "true" ]; then
-            python margin_screener.py --inspect 2>&1 | tee result.txt
-          else
-            python margin_screener.py \
-              --weeks "${{ inputs.weeks || '5' }}" \
-              --top "${{ inputs.top || '15' }}" \
-              --out-dir reports/margin 2>&1 | tee result.txt
-          fi
+          python margin_screener.py \
+            --weeks "${{ inputs.weeks || '5' }}" \
+            --top "${{ inputs.top || '15' }}" \
+            --out-dir reports/margin 2>&1 | tee result.txt
 
       - name: 結果をサマリに表示
         if: always()
         run: |
           {
+            echo '## 構造確認ログ'
+            echo '```'
+            tail -n 120 inspect.txt 2>/dev/null || echo 'なし'
+            echo '```'
             echo '## 実行ログ'
             echo '```'
-            cat result.txt
+            cat result.txt 2>/dev/null || echo 'なし'
             echo '```'
             latest=$(ls -1 reports/margin/*.md 2>/dev/null | tail -n 1)
             if [ -n "$latest" ]; then
