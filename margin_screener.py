@@ -243,8 +243,12 @@ def read_table(url: str, data: bytes) -> list[list[str]]:
 def extract_records_pdf(data: bytes, verbose: bool = False) -> dict[str, dict]:
     """syumatsu*.pdf から {code: {name, buy, sell}} を取り出す。
 
-    ページ上の「売残高」「買残高」ヘッダのx座標を列アンカーとして、
-    各行の数値を最寄りの列に割り当てる。段組み (1行に複数銘柄) にも対応する。
+    レイアウト (東証公表の銘柄別週末残高):
+      - 証券コードは5桁表記 (例 13010 = 1301)、x≈150〜270 の列にある
+      - 1銘柄の数値はちょうど12個: [売残合計, 前週比, 買残合計, 前週比,
+        一般売残, 前週比, 制度売残, 前週比, 一般買残, 前週比, 制度買残, 前週比]
+        (▲は負号で別トークンのため、数値の個数は常に12)
+      - 銘柄名・コードの行と数値の行が上下に分かれることがある
     """
     try:
         import pdfplumber  # type: ignore
@@ -255,74 +259,63 @@ def extract_records_pdf(data: bytes, verbose: bool = False) -> dict[str, dict]:
     import logging
     logging.getLogger("pdfminer").setLevel(logging.ERROR)
 
-    code_word = re.compile(r"^[0-9][0-9A-Z]{3}$")
+    code_word = re.compile(r"^[0-9][0-9A-Z]{3}0$")  # 5桁表記 (末尾は市場0)
     num_word = re.compile(r"^[0-9][0-9,]*$")
+    ascii_word = re.compile(r"^[A-Za-z.,()\-]+$")
 
     records: dict[str, dict] = {}
-    anchors: list[tuple[float, str]] = []  # (x右端, 種別)。ヘッダが無いページでは前のものを使い回す
+    n12 = skipped = 0
 
     with pdfplumber.open(BytesIO(data)) as pdf:
         for pno, page in enumerate(pdf.pages):
             words = page.extract_words()
 
-            page_anchors = []
-            for w in words:
-                t = w["text"]
-                if "前週" in t or "増減" in t:
-                    page_anchors.append((w["x1"], "diff"))
-                elif "売残" in t:
-                    page_anchors.append((w["x1"], "sell"))
-                elif "買残" in t:
-                    page_anchors.append((w["x1"], "buy"))
-            if page_anchors:
-                anchors = page_anchors
-
-            lines: dict[int, list] = {}
-            for w in words:
-                lines.setdefault(round(w["top"] / 4), []).append(w)
+            # y座標で行にまとめる (固定バケツだと行が割れるため逐次クラスタリング)
+            lines: list[dict] = []
+            for w in sorted(words, key=lambda w: w["top"]):
+                if lines and w["top"] - lines[-1]["top"] <= 3:
+                    lines[-1]["words"].append(w)
+                else:
+                    lines.append({"top": w["top"], "words": [w]})
 
             if verbose and pno == 0:
-                print(f"  [PDF] 1ページ目: {len(words)}語 / 列アンカー: "
-                      + ", ".join(f"{s}@{x:.0f}" for x, s in anchors))
-                for key in sorted(lines)[:25]:
-                    ws = sorted(lines[key], key=lambda w: w["x0"])
+                print(f"  [PDF] 1ページ目: {len(words)}語 / {len(lines)}行")
+                for ln in lines[:20]:
+                    ws = sorted(ln["words"], key=lambda w: w["x0"])
                     print("   | " + " | ".join(f"{w['text']}({w['x0']:.0f})" for w in ws))
 
-            for key in sorted(lines):
-                ws = sorted(lines[key], key=lambda w: w["x0"])
-                # コードの出現ごとにセグメントを切る (段組みページ対策)
-                segs: list[dict] = []
-                seg = None
+            pending: dict | None = None  # 直前に見たコード行 (数値行が後続するケース)
+            for ln in lines:
+                ws = sorted(ln["words"], key=lambda w: w["x0"])
+                code = None
+                name_parts: list[str] = []
+                nums: list[float] = []
                 for w in ws:
-                    txt = w["text"].strip()
-                    if code_word.fullmatch(txt):
-                        seg = {"code": txt, "words": []}
-                        segs.append(seg)
-                    elif seg is not None:
-                        seg["words"].append(w)
-                for seg in segs:
-                    name_parts: list[str] = []
-                    sell = buy = None
-                    for w in seg["words"]:
-                        txt = w["text"].strip()
-                        if num_word.fullmatch(txt):
-                            if not anchors:
-                                continue
-                            side = min(anchors, key=lambda a: abs(a[0] - w["x1"]))[1]
-                            val = float(txt.replace(",", ""))
-                            if side == "sell" and sell is None:
-                                sell = val
-                            elif side == "buy" and buy is None:
-                                buy = val
-                        elif not re.fullmatch(r"[-△▲()0-9,.%/]+", txt):
-                            name_parts.append(txt)
-                    if sell is None and buy is None:
-                        continue
-                    rec = records.setdefault(seg["code"], {"name": "", "buy": 0.0, "sell": 0.0})
-                    rec["buy"] += buy or 0.0
-                    rec["sell"] += sell or 0.0
-                    if not rec["name"] and name_parts:
-                        rec["name"] = "".join(name_parts)[:16]
+                    t = w["text"].strip()
+                    if code_word.fullmatch(t) and 150 <= w["x0"] <= 270:
+                        code = t[:4]
+                    elif num_word.fullmatch(t) and w["x0"] > 270:
+                        nums.append(float(t.replace(",", "")))
+                    elif w["x0"] < 200 and t not in ("B", "普通株式") \
+                            and not t.startswith("JP") and not ascii_word.fullmatch(t):
+                        name_parts.append(t)
+                if code:
+                    pending = {"code": code, "top": ln["top"],
+                               "name": "".join(name_parts).replace("普通株式", "")[:16]}
+                if len(nums) == 12 and pending and ln["top"] - pending["top"] <= 15:
+                    n12 += 1
+                    rec = records.setdefault(pending["code"],
+                                             {"name": pending["name"], "buy": 0.0, "sell": 0.0})
+                    rec["sell"] += nums[0]
+                    rec["buy"] += nums[2]
+                    if not rec["name"]:
+                        rec["name"] = pending["name"]
+                    pending = None
+                elif nums and len(nums) != 12:
+                    skipped += 1
+
+    if verbose:
+        print(f"  [PDF] 12数値の銘柄行 {n12} / 数値個数が合わずスキップ {skipped}")
     return records
 
 
