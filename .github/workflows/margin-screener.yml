@@ -49,9 +49,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      # JPXの週次ファイルが旧形式 (.xls) の場合だけ必要になる。.xlsx なら標準ライブラリで読める。
-      - name: xlrd をインストール (.xls 対応)
-        run: pip install xlrd
+      # 銘柄別信用取引週末残高はPDFで公表されているため pdfplumber が必要。
+      # xlrd は将来Excel形式に戻った場合の保険。
+      - name: 依存ライブラリをインストール
+        run: pip install pdfplumber xlrd
 
       # 先にファイル構造の確認だけ流しておくと、本実行が解析エラーで落ちたときに
       # ログから原因 (JPXのレイアウト変更) を特定できる。

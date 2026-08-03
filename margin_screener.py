@@ -78,32 +78,16 @@ def http_get(url: str, timeout: int = 30, retries: int = 3) -> bytes:
 # JPX: 週次ファイルの発見とダウンロード
 # --------------------------------------------------------------------------
 
-DATE_PAT = re.compile(r"(?:(\d{4})\s*年)?\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日")
-LINK_PAT = re.compile(r'<a\s[^>]*href="([^"]+\.(?:xlsx?|csv))"[^>]*>(.*?)</a>', re.S | re.I)
+# 銘柄別信用取引週末残高のファイル名。現在はPDFのみで公表されている
+# (例: syumatsu2026072400.pdf = 2026/07/24 基準)。
+SYUMATSU_PAT = re.compile(r"syumatsu(\d{4})(\d{2})(\d{2})\d*\.(pdf|xlsx?|csv)$", re.I)
 
 
-def _guess_date(text: str, today: date) -> date | None:
-    m = DATE_PAT.search(text)
-    if not m:
-        return None
-    year = int(m.group(1)) if m.group(1) else today.year
-    month, day = int(m.group(2)), int(m.group(3))
-    try:
-        d = date(year, month, day)
-    except ValueError:
-        return None
-    # 年の記載がないリンクで、未来日付になってしまったら前年扱い (年またぎ対策)
-    if not m.group(1) and d > today + timedelta(days=7):
-        d = date(year - 1, month, day)
-    return d
-
-
-def discover_weekly_files(verbose: bool = False) -> list[tuple[date | None, str, str]]:
-    """JPXの掲載ページを巡回し、(基準日, URL, リンク周辺テキスト) のリストを新しい順に返す。"""
-    today = datetime.now(JST).date()
+def discover_weekly_files(verbose: bool = False) -> list[tuple[date, str, str]]:
+    """JPXの掲載ページを巡回し、銘柄別週末残高ファイルを (基準日, URL, ファイル名) で新しい順に返す。"""
     pages = list(JPX_MARGIN_PAGES)
     seen_pages: set[str] = set()
-    found: dict[str, tuple[date | None, str]] = {}
+    found: dict[str, tuple[date, str]] = {}  # ファイル名 → (基準日, URL)。和文/英文ページの重複を除く
 
     while pages:
         page_url = pages.pop(0)
@@ -116,41 +100,33 @@ def discover_weekly_files(verbose: bool = False) -> list[tuple[date | None, str,
             print(f"[WARN] ページ取得失敗 {page_url}: {e}")
             continue
 
-        if verbose:
-            all_links = re.findall(r'href="([^"]+)"', body)
-            files = [h for h in all_links if re.search(r"\.(xlsx?|csv|pdf|zip)([?#]|$)", h, re.I)]
-            print(f"  [DEBUG] {page_url}: {len(body)}文字 / リンク{len(all_links)}件 / ファイル{len(files)}件")
-            for h in files[:30]:
-                print(f"    file: {h}")
-            if not files:
-                # ファイルリンクが皆無ならページ抜粋を出す (JS描画などの切り分け用)
-                pos = body.find("残高")
-                print(f"    抜粋: {body[max(0, pos - 200): pos + 800] if pos >= 0 else body[:800]!r}")
-
-        # ページ内のExcel/CSVリンクを、リンク文言と直前の見出しテキストごと拾う
-        for m in LINK_PAT.finditer(body):
-            href, label = m.group(1), re.sub(r"<[^>]+>", " ", m.group(2))
-            url = href if href.startswith("http") else JPX_BASE + href
-            context = html.unescape(re.sub(r"<[^>]+>", " ", body[max(0, m.start() - 400): m.end()]))
-            # 銘柄別の週末残高ファイルだけが対象。週間合計残高などのファイルを除外する。
-            if "銘柄別" not in context and "syumatsu" not in url.lower():
+        for href in re.findall(r'href="([^"]+)"', body):
+            base = os.path.basename(href)
+            m = SYUMATSU_PAT.search(base)
+            if not m:
                 continue
-            when = _guess_date(html.unescape(label), today) or _guess_date(context, today)
-            if url not in found or (found[url][0] is None and when):
-                found[url] = (when, html.unescape(label).strip())
+            try:
+                when = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                continue
+            url = href if href.startswith("http") else JPX_BASE + href
+            # 英語ページより日本語ページのURLを優先する (中身は同一)
+            if base not in found or "/english/" in found[base][1]:
+                found[base] = (when, url)
             if verbose:
-                print(f"  リンク発見: {when} {url} ({html.unescape(label).strip()[:40]})")
+                print(f"  リンク発見: {when} {url}")
 
         # 過去分 (バックナンバー) ページも一段だけ辿る
         if len(seen_pages) <= 6:
             for href in re.findall(r'href="([^"]*margin[^"]*\.html)"', body):
+                if "/english/" in href:
+                    continue
                 sub = href if href.startswith("http") else JPX_BASE + href
                 if sub not in seen_pages:
                     pages.append(sub)
 
-    items = [(when, url, label) for url, (when, label) in found.items()]
-    # 基準日が取れたものを新しい順に。日付不明のものは末尾。
-    items.sort(key=lambda t: (t[0] is None, -(t[0].toordinal() if t[0] else 0)))
+    items = [(when, url, base) for base, (when, url) in found.items()]
+    items.sort(key=lambda t: t[0], reverse=True)
     return items
 
 
@@ -258,6 +234,96 @@ def read_table(url: str, data: bytes) -> list[list[str]]:
             return _xlsx_rows(data)
         return _xls_rows(data)
     return _csv_rows(data)
+
+
+# --------------------------------------------------------------------------
+# PDF 読み取り (銘柄別信用取引週末残高は現在PDFのみで公表)
+# --------------------------------------------------------------------------
+
+def extract_records_pdf(data: bytes, verbose: bool = False) -> dict[str, dict]:
+    """syumatsu*.pdf から {code: {name, buy, sell}} を取り出す。
+
+    ページ上の「売残高」「買残高」ヘッダのx座標を列アンカーとして、
+    各行の数値を最寄りの列に割り当てる。段組み (1行に複数銘柄) にも対応する。
+    """
+    try:
+        import pdfplumber  # type: ignore
+    except ImportError:
+        sys.exit("PDFの読み取りには pdfplumber が必要です:\n  pip install pdfplumber")
+    from io import BytesIO
+
+    import logging
+    logging.getLogger("pdfminer").setLevel(logging.ERROR)
+
+    code_word = re.compile(r"^[0-9][0-9A-Z]{3}$")
+    num_word = re.compile(r"^[0-9][0-9,]*$")
+
+    records: dict[str, dict] = {}
+    anchors: list[tuple[float, str]] = []  # (x右端, 種別)。ヘッダが無いページでは前のものを使い回す
+
+    with pdfplumber.open(BytesIO(data)) as pdf:
+        for pno, page in enumerate(pdf.pages):
+            words = page.extract_words()
+
+            page_anchors = []
+            for w in words:
+                t = w["text"]
+                if "前週" in t or "増減" in t:
+                    page_anchors.append((w["x1"], "diff"))
+                elif "売残" in t:
+                    page_anchors.append((w["x1"], "sell"))
+                elif "買残" in t:
+                    page_anchors.append((w["x1"], "buy"))
+            if page_anchors:
+                anchors = page_anchors
+
+            lines: dict[int, list] = {}
+            for w in words:
+                lines.setdefault(round(w["top"] / 4), []).append(w)
+
+            if verbose and pno == 0:
+                print(f"  [PDF] 1ページ目: {len(words)}語 / 列アンカー: "
+                      + ", ".join(f"{s}@{x:.0f}" for x, s in anchors))
+                for key in sorted(lines)[:25]:
+                    ws = sorted(lines[key], key=lambda w: w["x0"])
+                    print("   | " + " | ".join(f"{w['text']}({w['x0']:.0f})" for w in ws))
+
+            for key in sorted(lines):
+                ws = sorted(lines[key], key=lambda w: w["x0"])
+                # コードの出現ごとにセグメントを切る (段組みページ対策)
+                segs: list[dict] = []
+                seg = None
+                for w in ws:
+                    txt = w["text"].strip()
+                    if code_word.fullmatch(txt):
+                        seg = {"code": txt, "words": []}
+                        segs.append(seg)
+                    elif seg is not None:
+                        seg["words"].append(w)
+                for seg in segs:
+                    name_parts: list[str] = []
+                    sell = buy = None
+                    for w in seg["words"]:
+                        txt = w["text"].strip()
+                        if num_word.fullmatch(txt):
+                            if not anchors:
+                                continue
+                            side = min(anchors, key=lambda a: abs(a[0] - w["x1"]))[1]
+                            val = float(txt.replace(",", ""))
+                            if side == "sell" and sell is None:
+                                sell = val
+                            elif side == "buy" and buy is None:
+                                buy = val
+                        elif not re.fullmatch(r"[-△▲()0-9,.%/]+", txt):
+                            name_parts.append(txt)
+                    if sell is None and buy is None:
+                        continue
+                    rec = records.setdefault(seg["code"], {"name": "", "buy": 0.0, "sell": 0.0})
+                    rec["buy"] += buy or 0.0
+                    rec["sell"] += sell or 0.0
+                    if not rec["name"] and name_parts:
+                        rec["name"] = "".join(name_parts)[:16]
+    return records
 
 
 # --------------------------------------------------------------------------
@@ -620,23 +686,29 @@ def run(args) -> None:
     for when, url, label in items[: args.weeks]:
         print(f"  {when} {label[:40]} {url}")
 
-    files = download_weekly(items, args.weeks, args.cache_dir)
+    # 構造確認モードでは最新1週だけ読んで中身を見せる
+    files = download_weekly(items, 1 if args.inspect else args.weeks, args.cache_dir)
 
     weekly: list[tuple[date | None, dict[str, dict]]] = []
     for when, url, data in files:
-        rows = read_table(url, data)
-        if args.inspect:
-            print(f"\n--- {url} 先頭20行 ---")
-            for r in rows[:20]:
-                print("  | " + " | ".join(str(c)[:14] for c in r[:12]))
-        records = extract_records(rows, verbose=args.inspect)
+        if url.lower().endswith(".pdf"):
+            records = extract_records_pdf(data, verbose=args.inspect)
+        else:
+            rows = read_table(url, data)
+            if args.inspect:
+                print(f"\n--- {url} 先頭20行 ---")
+                for r in rows[:20]:
+                    print("  | " + " | ".join(str(c)[:14] for c in r[:12]))
+            records = extract_records(rows, verbose=args.inspect)
         print(f"  {when}: {len(records)} 銘柄を読み取り")
         weekly.append((when, records))
 
     if args.inspect:
-        sample = list(weekly[0][1].items())[:5]
+        known = [c for c in ("7203", "9984", "7011") if c in weekly[0][1]]
+        sample = known + [c for c in list(weekly[0][1])[:5] if c not in known]
         print("\nサンプル (最新週):")
-        for code, rec in sample:
+        for code in sample:
+            rec = weekly[0][1][code]
             print(f"  {code} {rec['name']}: 買残 {rec['buy']:,.0f} / 売残 {rec['sell']:,.0f}")
         return
 
