@@ -2,10 +2,11 @@ name: 信用残スクリーニング
 
 on:
   schedule:
-    # 水曜 8:00 JST (= UTC 火 23:00)。
-    # JPXの銘柄別信用取引週末残高は通常、翌週第2営業日 (火曜) の夕方に公表されるため、
-    # その翌朝に実行して最新週まで反映させる。
-    - cron: '0 23 * * 2'
+    # 平日 8:00 JST (= UTC 前日 23:00)。
+    # 信用残そのものは週次 (JPXの公表は翌週火曜夕方) だが、株価は毎日動くため
+    # 「株価下落 × 買残増加」の判定と25日線乖離は日次で更新される。
+    # 土日は株価も残高も動かないため平日のみ (UTC 日〜木 = JST 月〜金)。
+    - cron: '0 23 * * 0-4'
   # workflow_dispatch はデフォルトブランチに載るまで使えないため、
   # 開発ブランチではスクリーナー本体の変更を push したら即実行して動作確認する。
   push:
@@ -49,14 +50,25 @@ jobs:
         with:
           python-version: '3.11'
 
+      # 一度公表された週次PDFは中身が変わらない。日次実行のたびに5週分を
+      # JPXから取り直さないよう、ダウンロード済みPDFをキャッシュする。
+      # キーを毎回変えて必ず保存し、restore-keys で直近のキャッシュを引き継ぐ。
+      - name: 週次PDFのキャッシュ
+        uses: actions/cache@v4
+        with:
+          path: .cache/jpx
+          key: jpx-margin-pdf-${{ github.run_id }}
+          restore-keys: jpx-margin-pdf-
+
       # 銘柄別信用取引週末残高はPDFで公表されているため pdfplumber が必要。
       # xlrd は将来Excel形式に戻った場合の保険。
       - name: 依存ライブラリをインストール
         run: pip install pdfplumber xlrd
 
-      # 先にファイル構造の確認だけ流しておくと、本実行が解析エラーで落ちたときに
-      # ログから原因 (JPXのレイアウト変更) を特定できる。
+      # JPXのレイアウト変更を切り分けるための確認用。日次実行では毎回出すと
+      # ノイズになるだけなので、手動実行とコード変更時だけ流す。
       - name: JPXファイルの構造確認
+        if: github.event_name != 'schedule'
         run: python margin_screener.py --inspect 2>&1 | tee inspect.txt
         continue-on-error: true
 
@@ -69,14 +81,24 @@ jobs:
             --top "${{ inputs.top || '15' }}" \
             --out-dir reports/margin 2>&1 | tee result.txt
 
+      # キャッシュが際限なく膨らまないよう、新しい10週分だけ残す。
+      # ファイル名 (syumatsu2026072400.pdf) は辞書順=日付順になっている。
+      - name: 古いPDFキャッシュを整理
+        if: always()
+        run: |
+          ls -1 .cache/jpx/*.pdf 2>/dev/null | sort -r | tail -n +11 | xargs -r rm -f
+          ls -1 .cache/jpx 2>/dev/null | wc -l | xargs echo "キャッシュ保持数:"
+
       - name: 結果をサマリに表示
         if: always()
         run: |
           {
-            echo '## 構造確認ログ'
-            echo '```'
-            tail -n 120 inspect.txt 2>/dev/null || echo 'なし'
-            echo '```'
+            if [ -f inspect.txt ]; then
+              echo '## 構造確認ログ'
+              echo '```'
+              tail -n 120 inspect.txt
+              echo '```'
+            fi
             echo '## 実行ログ'
             echo '```'
             cat result.txt 2>/dev/null || echo 'なし'
