@@ -1,0 +1,86 @@
+name: 信用残スクリーニング
+
+on:
+  schedule:
+    # 水曜 8:00 JST (= UTC 火 23:00)。
+    # JPXの銘柄別信用取引週末残高は通常、翌週第2営業日 (火曜) の夕方に公表されるため、
+    # その翌朝に実行して最新週まで反映させる。
+    - cron: '0 23 * * 2'
+  workflow_dispatch:
+    inputs:
+      inspect:
+        description: 'JPXファイルの構造確認のみ行う (デバッグ用)'
+        required: false
+        default: 'false'
+      weeks:
+        description: '参照する週次データの数'
+        required: false
+        default: '5'
+      top:
+        description: '各リストの掲載数'
+        required: false
+        default: '15'
+
+# 同時実行を防ぐ (手動実行とスケジュールが重なった場合の push 衝突対策)
+concurrency:
+  group: margin-screener
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # JPXの週次ファイルが旧形式 (.xls) の場合だけ必要になる。.xlsx なら標準ライブラリで読める。
+      - name: xlrd をインストール (.xls 対応)
+        run: pip install xlrd
+
+      - name: スクリーニング実行
+        run: |
+          set -o pipefail
+          if [ "${{ inputs.inspect }}" = "true" ]; then
+            python margin_screener.py --inspect 2>&1 | tee result.txt
+          else
+            python margin_screener.py \
+              --weeks "${{ inputs.weeks || '5' }}" \
+              --top "${{ inputs.top || '15' }}" \
+              --out-dir reports/margin 2>&1 | tee result.txt
+          fi
+
+      - name: 結果をサマリに表示
+        if: always()
+        run: |
+          {
+            echo '## 実行ログ'
+            echo '```'
+            cat result.txt
+            echo '```'
+            latest=$(ls -1 reports/margin/*.md 2>/dev/null | tail -n 1)
+            if [ -n "$latest" ]; then
+              echo ''
+              cat "$latest"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 結果をコミット
+        if: inputs.inspect != 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/margin
+          if git diff --staged --quiet; then
+            echo "変更なし"
+          else
+            git commit -m "信用残スクリーニング結果 $(TZ=Asia/Tokyo date +%Y-%m-%d)"
+            git push
+          fi
