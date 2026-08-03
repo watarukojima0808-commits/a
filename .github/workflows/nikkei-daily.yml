@@ -2,7 +2,7 @@ name: 日経225 毎朝おすすめ銘柄レポート
 
 on:
   schedule:
-    - cron: '30 23 * * 0-4'  # 8:30 JST (月曜〜金曜)
+    - cron: '0 23 * * 0-4'   # 8:00 JST (月曜〜金曜)
   workflow_dispatch:           # 手動実行も可能
 
 jobs:
