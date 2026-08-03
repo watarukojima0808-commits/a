@@ -5,6 +5,10 @@ name: 選定結果の検証
 on:
   workflow_dispatch:
     inputs:
+      backtest:
+        description: '過去N営業日に遡ってやり直す (0 = reports/ の実績のみ検証)'
+        required: false
+        default: '0'
       top:
         description: '各日の上位何銘柄を検証するか (0 = 全件)'
         required: false
@@ -32,8 +36,10 @@ jobs:
           # 2>&1 はエラー本文をサマリに載せるため (stderr は tee を通らない)。
           set -o pipefail
           python nikkei_verify.py \
+            --backtest "${{ inputs.backtest }}" \
             --top "${{ inputs.top }}" \
             --cost-pct "${{ inputs.cost }}" \
+            --workers 4 \
             --detail 2>&1 | tee result.txt
 
       # 実行ログを開かなくても結果が読めるように、サマリ画面へ流し込む。

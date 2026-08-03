@@ -17,7 +17,11 @@ import re
 import sys
 from datetime import date, datetime
 
-from nikkei_daytrade import JST, Bar, fetch_bars, fetch_symbol
+from concurrent.futures import ThreadPoolExecutor
+
+from nikkei_daytrade import (
+    DEFAULT_LIST, Bar, analyze, fetch_bars, fetch_symbol, load_codes, score,
+)
 
 NIKKEI_SYMBOL = "^N225"
 
@@ -125,14 +129,19 @@ def pad(text: str, width: int) -> str:
     return text + " " * max(width - used, 0)
 
 
-def print_results(by_date: list[tuple[str, list[dict], float]], cost_pct: float, detail: bool) -> None:
+def print_results(by_date: list[tuple[str, list[dict], float]], cost_pct: float, detail: bool,
+                  backtested: bool = False) -> None:
     all_trades = [t for _, ts, _ in by_date for t in ts]
+    kind = "バックテスト" if backtested else "検証結果"
     print()
     print("=" * 78)
-    print(f" 検証結果  レポート {len(by_date)} 日分 / 延べ {len(all_trades)} 取引"
+    print(f" {kind}  {len(by_date)} 日分 / 延べ {len(all_trades)} 取引"
           f"  (往復コスト {cost_pct:.2f}% 控除後)")
     print("=" * 78)
     print(" ルール: 選定翌営業日の寄付で等金額買い、その日の引けで売る")
+    if backtested:
+        print(" ※ 過去に遡って選定をやり直した結果です。当時の構成銘柄ではなく")
+        print("    現在のリストを使うため、実際より良い数字が出ます。")
     print()
 
     if detail:
@@ -176,6 +185,16 @@ def print_results(by_date: list[tuple[str, list[dict], float]], cost_pct: float,
 
     verdict(s, avg_bench, len(by_date))
 
+    if backtested:
+        print("■ この数字を割り引いて見るべき理由")
+        print("  ・今も日経225に残っている銘柄だけが対象です。この1年で外された銘柄は")
+        print("    入っていないため、生き残りだけを見た甘い結果になっています。")
+        print("  ・寄付で必ず約定する前提です。ストップ高では買えません。")
+        print("  ・損切りが無く、引けまで持ち切る前提です。")
+        print("  ・税金(約20%)を引いていません。")
+        print("  実運用の成績はこれより確実に悪くなります。")
+        print()
+
 
 def verdict(s: dict, bench: float, days: int) -> None:
     """判断材料としてどこまで信用してよいかを明示する。"""
@@ -200,6 +219,98 @@ def verdict(s: dict, bench: float, days: int) -> None:
 
 
 # --------------------------------------------------------------------------
+# 過去日でのやり直し（バックテスト）
+# --------------------------------------------------------------------------
+
+def backtest(args: argparse.Namespace) -> list[tuple[str, list[dict], float]]:
+    """過去の各営業日に戻って選定からやり直し、翌日の結果を見る。
+
+    レポートが溜まるのを待たずに済むが、当時の構成銘柄ではなく現在のリストを
+    使うため、今も日経225に残っている銘柄だけを対象にした甘い数字になる。
+    """
+    codes = load_codes(args.codes_file)
+    print(f"{len(codes)} 銘柄の株価を取得中...")
+
+    bars_by_code: dict[str, list[Bar]] = {}
+
+    def work(item: tuple[str, str]) -> tuple[str, list[Bar]]:
+        code, _ = item
+        try:
+            return code, fetch_bars(code, range_="1y")
+        except Exception:
+            return code, []
+
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        for i, (code, bars) in enumerate(pool.map(work, codes), 1):
+            if bars:
+                bars_by_code[code] = bars
+            if i % 25 == 0 or i == len(codes):
+                print(f"  {i}/{len(codes)} 完了", end="\r", flush=True)
+    print()
+
+    if len(bars_by_code) < len(codes) * 0.6:
+        sys.exit(f"取得できたのが {len(bars_by_code)}/{len(codes)} 銘柄のみでした。時間をおいて再実行してください。")
+
+    nikkei = fetch_symbol(NIKKEI_SYMBOL, range_="1y")
+    if not nikkei:
+        sys.exit("日経平均の株価を取得できませんでした。比較対象なしでは判断できないため中止します。")
+
+    # 日経平均の営業日を暦の正とする。個別銘柄は売買停止などで欠けることがある。
+    calendar = [b.date for b in nikkei]
+    targets = calendar[-(args.backtest + 1):-1]
+    if not targets:
+        sys.exit("バックテストできる期間がありません。--backtest の日数を減らしてください。")
+
+    index_by_code = {c: {b.date: i for i, b in enumerate(bars)} for c, bars in bars_by_code.items()}
+    nikkei_index = {b.date: i for i, b in enumerate(nikkei)}
+    names = dict(codes)
+
+    print(f"{targets[0]} 〜 {targets[-1]} の {len(targets)} 営業日でやり直します...")
+
+    by_date = []
+    for n, base in enumerate(targets, 1):
+        metrics = []
+        for code, bars in bars_by_code.items():
+            i = index_by_code[code].get(base)
+            # その日に値が付いていない、または翌日の足が無い銘柄は選定対象外。
+            if i is None or i + 1 >= len(bars):
+                continue
+            m = analyze(code, names.get(code, code), bars[: i + 1])
+            if m is None:
+                continue
+            if (m["atr_pct"] >= args.min_atr
+                    and m["turnover"] >= args.min_turnover * 100_000_000
+                    and m["close"] >= args.min_price):
+                m["score"] = score(m)
+                metrics.append((m, bars[i + 1]))
+
+        metrics.sort(key=lambda x: x[0]["score"], reverse=True)
+        trades = []
+        for m, nxt in metrics[: args.top or 10]:
+            if nxt.o <= 0:
+                continue
+            trades.append({
+                "code": m["code"], "name": m["name"], "trade_date": nxt.date,
+                "open": nxt.o, "close": nxt.c,
+                "ret": (nxt.c / nxt.o - 1) * 100 - args.cost_pct,
+                "gap": (nxt.o / m["close"] - 1) * 100,
+                "max_up": (nxt.h / nxt.o - 1) * 100,
+                "max_dn": (nxt.l / nxt.o - 1) * 100,
+            })
+
+        j = nikkei_index[base]
+        bench_bar = nikkei[j + 1] if j + 1 < len(nikkei) else None
+        if trades and bench_bar and bench_bar.o:
+            by_date.append((str(base), trades, (bench_bar.c / bench_bar.o - 1) * 100))
+
+        if n % 5 == 0 or n == len(targets):
+            print(f"  {n}/{len(targets)} 日分 完了", end="\r", flush=True)
+    print()
+
+    return by_date
+
+
+# --------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -210,7 +321,21 @@ def main() -> None:
     parser.add_argument("--top", type=int, default=0, metavar="件数", help="各日の上位N銘柄だけ検証する (デフォルト: 全件)")
     parser.add_argument("--cost-pct", type=float, default=0.1, metavar="率", help="往復の手数料+スリッページ%% (デフォルト: 0.1)")
     parser.add_argument("--detail", action="store_true", help="1取引ずつ明細を表示する")
+    parser.add_argument("--backtest", type=int, default=0, metavar="日数",
+                        help="レポートを使わず、過去N営業日に戻って選定からやり直す")
+    parser.add_argument("--codes-file", default=DEFAULT_LIST, metavar="CSV", help="銘柄リスト (バックテスト時)")
+    parser.add_argument("--workers", type=int, default=6, metavar="数", help="並列取得数 (バックテスト時)")
+    parser.add_argument("--min-atr", type=float, default=1.5, metavar="%%", help="ATR下限 (バックテスト時)")
+    parser.add_argument("--min-turnover", type=float, default=20, metavar="億円", help="売買代金下限 (バックテスト時)")
+    parser.add_argument("--min-price", type=float, default=500, metavar="円", help="株価下限 (バックテスト時)")
     args = parser.parse_args()
+
+    if args.backtest:
+        by_date = backtest(args)
+        if not by_date:
+            sys.exit("バックテストで有効な取引が作れませんでした。")
+        print_results(by_date, args.cost_pct, args.detail, backtested=True)
+        return
 
     reports = load_reports(args.reports)
     if not reports:
