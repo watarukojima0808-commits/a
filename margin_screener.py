@@ -116,6 +116,17 @@ def discover_weekly_files(verbose: bool = False) -> list[tuple[date | None, str,
             print(f"[WARN] ページ取得失敗 {page_url}: {e}")
             continue
 
+        if verbose:
+            all_links = re.findall(r'href="([^"]+)"', body)
+            files = [h for h in all_links if re.search(r"\.(xlsx?|csv|pdf|zip)([?#]|$)", h, re.I)]
+            print(f"  [DEBUG] {page_url}: {len(body)}文字 / リンク{len(all_links)}件 / ファイル{len(files)}件")
+            for h in files[:30]:
+                print(f"    file: {h}")
+            if not files:
+                # ファイルリンクが皆無ならページ抜粋を出す (JS描画などの切り分け用)
+                pos = body.find("残高")
+                print(f"    抜粋: {body[max(0, pos - 200): pos + 800] if pos >= 0 else body[:800]!r}")
+
         # ページ内のExcel/CSVリンクを、リンク文言と直前の見出しテキストごと拾う
         for m in LINK_PAT.finditer(body):
             href, label = m.group(1), re.sub(r"<[^>]+>", " ", m.group(2))
