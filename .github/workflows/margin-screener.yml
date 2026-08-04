@@ -1,20 +1,10 @@
 name: 信用残スクリーニング
 
+# 平日朝の定期実行は Claude のルーティン「信用残スクリーニング（平日朝）」に移管した。
+# ルーティンは同じ 8:00 JST に走り、結果をプッシュ通知で届ける。
+# ここに cron を残すと、デフォルトブランチへマージした時点で二重実行になるため置いていない。
+# 手動で回したいときのために workflow_dispatch だけ残す (デフォルトブランチでのみ利用可)。
 on:
-  schedule:
-    # 平日 8:00 JST (= UTC 前日 23:00)。
-    # 信用残そのものは週次 (JPXの公表は翌週火曜夕方) だが、株価は毎日動くため
-    # 「株価下落 × 買残増加」の判定と25日線乖離は日次で更新される。
-    # 土日は株価も残高も動かないため平日のみ (UTC 日〜木 = JST 月〜金)。
-    - cron: '0 23 * * 0-4'
-  # workflow_dispatch はデフォルトブランチに載るまで使えないため、
-  # 開発ブランチではスクリーナー本体の変更を push したら即実行して動作確認する。
-  push:
-    branches:
-      - 'claude/margin-buying-demand-stocks-8d35qb'
-    paths:
-      - 'margin_screener.py'
-      - '.github/workflows/margin-screener.yml'
   workflow_dispatch:
     inputs:
       inspect:
@@ -30,7 +20,7 @@ on:
         required: false
         default: '15'
 
-# 同時実行を防ぐ (手動実行とスケジュールが重なった場合の push 衝突対策)
+# 同時実行を防ぐ (手動実行が重なった場合の push 衝突対策)
 concurrency:
   group: margin-screener
   cancel-in-progress: false
@@ -50,7 +40,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 一度公表された週次PDFは中身が変わらない。日次実行のたびに5週分を
+      # 一度公表された週次PDFは中身が変わらないので、実行のたびに5週分を
       # JPXから取り直さないよう、ダウンロード済みPDFをキャッシュする。
       # キーを毎回変えて必ず保存し、restore-keys で直近のキャッシュを引き継ぐ。
       - name: 週次PDFのキャッシュ
@@ -65,10 +55,8 @@ jobs:
       - name: 依存ライブラリをインストール
         run: pip install pdfplumber xlrd
 
-      # JPXのレイアウト変更を切り分けるための確認用。日次実行では毎回出すと
-      # ノイズになるだけなので、手動実行とコード変更時だけ流す。
+      # 解析が落ちたときにJPXのレイアウト変更を切り分けるための確認用。
       - name: JPXファイルの構造確認
-        if: github.event_name != 'schedule'
         run: python margin_screener.py --inspect 2>&1 | tee inspect.txt
         continue-on-error: true
 
