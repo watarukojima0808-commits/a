@@ -47,7 +47,7 @@ int MAXPV = 40
 
 //============================ 内部状態 ============================
 // メインのジグザグ(dir: 1=高値ピボット, -1=安値ピボット)
-// ※描画は時間(xloc.time)座標で行う。bar_index 座標は過去方向の距離制限で
+// ※描画は時間(xloc.bar_time)座標で行う。bar_index 座標は過去方向の距離制限で
 //   ランタイムエラー(RE10026)になるため使用しない。
 var pvPrice = array.new_float()
 var pvBar   = array.new_int()
@@ -188,15 +188,15 @@ f_clearLabels(a) =>
 
 // 目標値の水平ラインとラベルを描画(x1, x2 は時間座標)
 f_target(x1, x2, y, txt) =>
-    array.push(fibLines, line.new(x1, y, x2, y, xloc=xloc.time, color=colFib, style=line.style_dashed))
-    array.push(fibLabels, label.new(x2, y, txt, xloc=xloc.time, style=label.style_label_left, color=color.new(colFib, 85), textcolor=colFib, size=size.small))
+    array.push(fibLines, line.new(x1, y, x2, y, xloc=xloc.bar_time, color=colFib, style=line.style_dashed))
+    array.push(fibLabels, label.new(x2, y, txt, xloc=xloc.bar_time, style=label.style_label_left, color=color.new(colFib, 85), textcolor=colFib, size=size.small))
 
 // 波番号ラベルを描画
 f_waveLabel(idx, txt, c) =>
     float p = array.get(pvPrice, idx)
     int   t = array.get(pvTime, idx)
     bool isHigh = array.get(pvDir, idx) == 1
-    array.push(ewLabels, label.new(t, p, txt, xloc=xloc.time, style=isHigh ? label.style_label_down : label.style_label_up, color=c, textcolor=color.white, size=size.normal))
+    array.push(ewLabels, label.new(t, p, txt, xloc=xloc.bar_time, style=isHigh ? label.style_label_down : label.style_label_up, color=c, textcolor=color.white, size=size.normal))
 
 //============================ ピボット検出 ============================
 float ph  = ta.pivothigh(high, len, len)
@@ -240,7 +240,7 @@ if changed
             float pB = array.get(pvPrice, i + 1)
             int tA = array.get(pvTime, i)
             int tB = array.get(pvTime, i + 1)
-            array.push(zzLines, line.new(tA, pA, tB, pB, xloc=xloc.time, color=pB > pA ? colUp : colDn, width=2))
+            array.push(zzLines, line.new(tA, pA, tB, pB, xloc=xloc.bar_time, color=pB > pA ? colUp : colDn, width=2))
 
     [imp, impUp] = f_findImpulse()
     [ok1234, up1234] = f_partial1234()
@@ -345,7 +345,7 @@ if changedBig
     int m = array.size(bgPrice)
     if m >= 2
         for i = 0 to m - 2
-            array.push(bigLines, line.new(array.get(bgTime, i), array.get(bgPrice, i), array.get(bgTime, i + 1), array.get(bgPrice, i + 1), xloc=xloc.time, color=colBig, width=4))
+            array.push(bigLines, line.new(array.get(bgTime, i), array.get(bgPrice, i), array.get(bgTime, i + 1), array.get(bgPrice, i + 1), xloc=xloc.bar_time, color=colBig, width=4))
 
 //============================ 状況パネル ============================
 var table tbl = table.new(position.top_right, 2, 5, bgcolor=color.new(chart.bg_color, 15), border_width=1, border_color=color.new(#787b86, 70))
