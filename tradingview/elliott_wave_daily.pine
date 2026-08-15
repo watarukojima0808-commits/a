@@ -47,12 +47,16 @@ int MAXPV = 40
 
 //============================ 内部状態 ============================
 // メインのジグザグ(dir: 1=高値ピボット, -1=安値ピボット)
+// ※描画は時間(xloc.time)座標で行う。bar_index 座標は過去方向の距離制限で
+//   ランタイムエラー(RE10026)になるため使用しない。
 var pvPrice = array.new_float()
 var pvBar   = array.new_int()
+var pvTime  = array.new_int()
 var pvDir   = array.new_int()
 // 上位度合いのジグザグ
 var bgPrice = array.new_float()
 var bgBar   = array.new_int()
+var bgTime  = array.new_int()
 var bgDir   = array.new_int()
 // 描画オブジェクト
 var zzLines   = array.new<line>()
@@ -68,12 +72,13 @@ f_pct(a, b) =>
 // ジグザグ配列を更新する。配列に変化があれば true を返す。
 // 同方向のピボットはより極端な値で置き換え、逆方向は最小スイング幅を
 // 満たした場合のみ新しい波として追加する。
-f_addPivot(prices, bars, dirs, price, b, dir, minDev, maxN) =>
+f_addPivot(prices, bars, times, dirs, price, b, t, dir, minDev, maxN) =>
     bool ch = false
     int n = array.size(prices)
     if n == 0
         array.push(prices, price)
         array.push(bars, b)
+        array.push(times, t)
         array.push(dirs, dir)
         ch := true
     else
@@ -83,15 +88,18 @@ f_addPivot(prices, bars, dirs, price, b, dir, minDev, maxN) =>
             if (dir == 1 and price > lastP) or (dir == -1 and price < lastP)
                 array.set(prices, n - 1, price)
                 array.set(bars, n - 1, b)
+                array.set(times, n - 1, t)
                 ch := true
         else if f_pct(price, lastP) >= minDev
             array.push(prices, price)
             array.push(bars, b)
+            array.push(times, t)
             array.push(dirs, dir)
             ch := true
     while array.size(prices) > maxN
         array.shift(prices)
         array.shift(bars)
+        array.shift(times)
         array.shift(dirs)
     ch
 
@@ -178,17 +186,17 @@ f_clearLabels(a) =>
     while array.size(a) > 0
         label.delete(array.pop(a))
 
-// 目標値の水平ラインとラベルを描画
+// 目標値の水平ラインとラベルを描画(x1, x2 は時間座標)
 f_target(x1, x2, y, txt) =>
-    array.push(fibLines, line.new(x1, y, x2, y, xloc=xloc.bar_index, color=colFib, style=line.style_dashed))
-    array.push(fibLabels, label.new(x2, y, txt, xloc=xloc.bar_index, style=label.style_label_left, color=color.new(colFib, 85), textcolor=colFib, size=size.small))
+    array.push(fibLines, line.new(x1, y, x2, y, xloc=xloc.time, color=colFib, style=line.style_dashed))
+    array.push(fibLabels, label.new(x2, y, txt, xloc=xloc.time, style=label.style_label_left, color=color.new(colFib, 85), textcolor=colFib, size=size.small))
 
 // 波番号ラベルを描画
 f_waveLabel(idx, txt, c) =>
     float p = array.get(pvPrice, idx)
-    int   b = array.get(pvBar, idx)
+    int   t = array.get(pvTime, idx)
     bool isHigh = array.get(pvDir, idx) == 1
-    array.push(ewLabels, label.new(b, p, txt, xloc=xloc.bar_index, style=isHigh ? label.style_label_down : label.style_label_up, color=c, textcolor=color.white, size=size.normal))
+    array.push(ewLabels, label.new(t, p, txt, xloc=xloc.time, style=isHigh ? label.style_label_down : label.style_label_up, color=c, textcolor=color.white, size=size.normal))
 
 //============================ ピボット検出 ============================
 float ph  = ta.pivothigh(high, len, len)
@@ -198,16 +206,16 @@ float pl2 = ta.pivotlow(low, bigLen, bigLen)
 
 bool changed = false
 if not na(ph)
-    changed := f_addPivot(pvPrice, pvBar, pvDir, ph, bar_index - len, 1, devPct, MAXPV) or changed
+    changed := f_addPivot(pvPrice, pvBar, pvTime, pvDir, ph, bar_index - len, time[len], 1, devPct, MAXPV) or changed
 if not na(pl)
-    changed := f_addPivot(pvPrice, pvBar, pvDir, pl, bar_index - len, -1, devPct, MAXPV) or changed
+    changed := f_addPivot(pvPrice, pvBar, pvTime, pvDir, pl, bar_index - len, time[len], -1, devPct, MAXPV) or changed
 
 bool changedBig = false
 if showBig
     if not na(ph2)
-        changedBig := f_addPivot(bgPrice, bgBar, bgDir, ph2, bar_index - bigLen, 1, devPct, MAXPV) or changedBig
+        changedBig := f_addPivot(bgPrice, bgBar, bgTime, bgDir, ph2, bar_index - bigLen, time[bigLen], 1, devPct, MAXPV) or changedBig
     if not na(pl2)
-        changedBig := f_addPivot(bgPrice, bgBar, bgDir, pl2, bar_index - bigLen, -1, devPct, MAXPV) or changedBig
+        changedBig := f_addPivot(bgPrice, bgBar, bgTime, bgDir, pl2, bar_index - bigLen, time[bigLen], -1, devPct, MAXPV) or changedBig
 
 //============================ カウントと描画 ============================
 var string phase     = "データ蓄積中…"
@@ -230,9 +238,9 @@ if changed
         for i = 0 to n - 2
             float pA = array.get(pvPrice, i)
             float pB = array.get(pvPrice, i + 1)
-            int bA = array.get(pvBar, i)
-            int bB = array.get(pvBar, i + 1)
-            array.push(zzLines, line.new(bA, pA, bB, pB, xloc=xloc.bar_index, color=pB > pA ? colUp : colDn, width=2))
+            int tA = array.get(pvTime, i)
+            int tB = array.get(pvTime, i + 1)
+            array.push(zzLines, line.new(tA, pA, tB, pB, xloc=xloc.time, color=pB > pA ? colUp : colDn, width=2))
 
     [imp, impUp] = f_findImpulse()
     [ok1234, up1234] = f_partial1234()
@@ -261,8 +269,9 @@ if changed
     if n >= 1
         int lastIdx = n - 1
         float lastP = array.get(pvPrice, lastIdx)
-        int lastB = array.get(pvBar, lastIdx)
-        int extB = lastB + 40
+        // 目標ラインは時間座標で右へ約40本分延長する
+        int lastB = array.get(pvTime, lastIdx)
+        int extB = lastB + 40 * timeframe.in_seconds(timeframe.period) * 1000
 
         int after = imp >= 0 ? lastIdx - (imp + 5) : -1
 
@@ -336,7 +345,7 @@ if changedBig
     int m = array.size(bgPrice)
     if m >= 2
         for i = 0 to m - 2
-            array.push(bigLines, line.new(array.get(bgBar, i), array.get(bgPrice, i), array.get(bgBar, i + 1), array.get(bgPrice, i + 1), xloc=xloc.bar_index, color=colBig, width=4))
+            array.push(bigLines, line.new(array.get(bgTime, i), array.get(bgPrice, i), array.get(bgTime, i + 1), array.get(bgPrice, i + 1), xloc=xloc.time, color=colBig, width=4))
 
 //============================ 状況パネル ============================
 var table tbl = table.new(position.top_right, 2, 5, bgcolor=color.new(chart.bg_color, 15), border_width=1, border_color=color.new(#787b86, 70))
