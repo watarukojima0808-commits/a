@@ -36,7 +36,8 @@ jobs:
           python elliott_wave3.py \
             --out-dir reports/elliott \
             --workers 4 \
-            --require-fresh
+            --require-fresh \
+            --exclude-bad
 
       # 過去の候補を残し、後から「3波は本当に来たか」を検証できるようにする。
       - name: 結果をコミット

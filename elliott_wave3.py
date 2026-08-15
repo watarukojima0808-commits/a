@@ -18,6 +18,7 @@ from io import StringIO
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
+import yahoo_fundamentals as fund
 from nikkei_daytrade import (
     JST,
     DEFAULT_LIST,
@@ -305,6 +306,18 @@ def score(m: dict) -> float:
     return base + (10.0 if m["cross_agree"] else 0.0)
 
 
+def earnings_note(m: dict, warn_days: int) -> tuple[str, bool]:
+    """次回決算日の表示と、直前かどうか。決算をまたぐと波動と無関係に飛ぶため。"""
+    f = m.get("fund")
+    date = f.get("earnings_date") if f else None
+    if not date:
+        return "—", False
+    delta = (date - datetime.now(JST).date()).days
+    if delta < 0:
+        return f"{date:%m/%d}済", False
+    return f"{date:%m/%d}({delta}日後)", delta <= warn_days
+
+
 def cross_mark(m: dict) -> str:
     """照合結果の表示。照合を切っている場合は判定なしを示す。"""
     if m["cross_agree"] is None:
@@ -347,6 +360,42 @@ def label(m: dict) -> str:
 # 出力
 # --------------------------------------------------------------------------
 
+def fundamentals_lines(m: dict, warn_days: int) -> str:
+    """レポート用に業績まわりを箇条書きで返す。"""
+    f = m["fund"]
+    out = [f"- **業績**: {fund.summary(f)}"]
+    if not f:
+        out.append("  （業績データを取得できませんでした。決算短信を各自で確認してください）")
+        return "\n".join(out) + "\n"
+
+    ratios = []
+    if f["operating_margin"] is not None:
+        ratios.append(f"営業利益率 {f['operating_margin'] * 100:.1f}%")
+    if f["roe"] is not None:
+        ratios.append(f"ROE {f['roe'] * 100:.1f}%")
+    if f["per"] is not None:
+        ratios.append(f"PER {f['per']:.1f}倍")
+    if f["pbr"] is not None:
+        ratios.append(f"PBR {f['pbr']:.2f}倍")
+    if f["dividend_yield"] is not None:
+        ratios.append(f"配当利回り {f['dividend_yield'] * 100:.2f}%")
+    if ratios:
+        out.append(f"- 指標: {' / '.join(ratios)}")
+
+    if f["target_mean"] and f["analysts"]:
+        gap = (f["target_mean"] / m["close"] - 1) * 100
+        out.append(
+            f"- アナリスト: {f['recommendation'] or '—'} ({f['analysts']:.0f}人) / "
+            f"目標株価 {f['target_mean']:,.0f}円 (現値比 {gap:+.1f}%)"
+        )
+
+    note, warn = earnings_note(m, warn_days)
+    if note != "—":
+        suffix = " ← **決算をまたぐとギャップで損切り位置を飛ばされる**" if warn else ""
+        out.append(f"- 次回決算: {note}{suffix}")
+    return "\n".join(out) + "\n"
+
+
 def print_console(picks: list[dict], stats: dict) -> None:
     now = datetime.now(JST)
     print()
@@ -359,20 +408,22 @@ def print_console(picks: list[dict], stats: dict) -> None:
         return
 
     print(f"{'#':>2} {'コード':<6} {'銘柄':<14} {'終値':>9} {'1波':>7} {'押し':>6} "
-          f"{'反発':>6} {'経過':>5} {'RR':>5} {'照合':>4} {'底':>6} {'点':>4}")
-    print("-" * 96)
+          f"{'経過':>5} {'RR':>5} {'照合':>4} {'底':>6} {'業績':>4} {'決算':>12} {'波形':>5} {'総合':>5}")
+    print("-" * 108)
     for i, m in enumerate(picks, 1):
         name = m["name"][:12]
         pad = " " * max(1, 14 - sum(2 if ord(ch) > 0x2E80 else 1 for ch in name))
+        note, warn = earnings_note(m, stats["earnings_warn"])
         print(
             f"{i:>2} {m['code']:<6} {name}{pad}{m['close']:>9,.0f} {m['wave1_pct']:>+6.1f}% "
-            f"{m['retrace'] * 100:>5.0f}% {m['rebound_pct']:>+5.1f}% {m['days_since']:>4}日 "
+            f"{m['retrace'] * 100:>5.0f}% {m['days_since']:>4}日 "
             f"{m['rr']:>4.1f} {cross_mark(m):>3} "
-            f"{'確定' if m['l2_confirmed'] else '未確定':>4} {m['score']:>4.0f}"
+            f"{'確定' if m['l2_confirmed'] else '未確定':>4} {m['grade']:>3} "
+            f"{(note + ' !') if warn else note:>12} {m['wave_score']:>5.0f} {m['score']:>5.0f}"
         )
-    print("-" * 96)
+    print("-" * 108)
     for i, m in enumerate(picks, 1):
-        print(f"{i:>2}. {m['code']} {m['name']}: {label(m)}")
+        print(f"{i:>2}. {m['code']} {m['name']}: {fund.summary(m['fund'])} / {label(m)}")
     print()
 
 
@@ -395,15 +446,17 @@ def format_report(picks: list[dict], stats: dict) -> str:
         names = "、".join("{} {}".format(m["code"], m["name"]) for m in agreed)
         w(f"うち **{len(agreed)}銘柄** は閾値を変えても同じ2波の底が出ています (照合 ○): {names}\n\n")
 
-    w("| # | コード | 銘柄 | 終値 | 1波 | 押し戻し | 底から | 経過 | 目標(1.618) | 損切り | RR | 照合 | 底 | スコア |\n")
-    w("|---|--------|------|------|-----|----------|--------|------|-------------|--------|----|------|----|--------|\n")
+    w("| # | コード | 銘柄 | 終値 | 1波 | 押し戻し | 経過 | 目標(1.618) | 損切り | RR | 照合 | 底 | 業績 | 決算 | 波形 | 総合 |\n")
+    w("|---|--------|------|------|-----|----------|------|-------------|--------|----|------|----|------|------|------|------|\n")
     for i, m in enumerate(picks, 1):
+        note, warn = earnings_note(m, stats["earnings_warn"])
         w(
             f"| {i} | {m['code']} | {m['name']} | {m['close']:,.0f} | {m['wave1_pct']:+.1f}% | "
-            f"{m['retrace'] * 100:.0f}% | {m['rebound_pct']:+.1f}% | {m['days_since']}日 | "
+            f"{m['retrace'] * 100:.0f}% | {m['days_since']}日 | "
             f"{m['target162']:,.0f} | {m['stop']:,.0f} | {m['rr']:.1f} | "
             f"{cross_mark(m)} | {'確定' if m['l2_confirmed'] else '未確定'} | "
-            f"{m['score']:.0f} |\n"
+            f"{m['grade']} | {'**' + note + ' 直前**' if warn else note} | "
+            f"{m['wave_score']:.0f} | {m['score']:.0f} |\n"
         )
     if picks[0]["cross_agree"] is not None:
         w("\n照合 ○ = 転換点の閾値を "
@@ -411,12 +464,16 @@ def format_report(picks: list[dict], stats: dict) -> str:
     else:
         w("\n照合 … = 照合を無効にして実行しています。\n")
     w("底「未確定」= 2波の底からの反発がまだ閾値に届いておらず、"
-      "チャートツールのエリオット指標では通常まだカウントされない段階。\n\n")
+      "チャートツールのエリオット指標では通常まだカウントされない段階。\n")
+    w("業績 = 直近四半期の前年同期比（◎増収増益 / ○増益 / △減速 / ✕減収減益 / ?データなし）。"
+      "総合 = 波形スコア + 業績調整（◎+8 / ○+3 / △-3 / ✕-12）。\n\n")
 
     w("## 銘柄メモ\n\n")
     for i, m in enumerate(picks, 1):
-        w(f"### {i}. {m['code']} {m['name']}  (スコア {m['score']:.0f})\n\n")
+        w(f"### {i}. {m['code']} {m['name']}  "
+          f"(総合 {m['score']:.0f} = 波形 {m['wave_score']:.0f} {m['fund_adjust']:+.0f})\n\n")
         w(f"- 特徴: {label(m)}\n")
+        w(fundamentals_lines(m, stats["earnings_warn"]))
         w(f"- **1波**: {m['l0_date']} 安値 {m['l0']:,.0f}円 → {m['h1_date']} 高値 {m['h1']:,.0f}円 "
           f"({m['wave1_pct']:+.1f}% / {m['days_w1']}日 / ATR {m['wave1_atr']:.1f}個分)\n")
         w(f"- **2波**: {m['h1_date']} → {m['l2_date']} 安値 {m['l2']:,.0f}円 "
@@ -496,8 +553,31 @@ def run(args: argparse.Namespace) -> None:
         print(f"最新データが {data_date} で本日分ではありません（休場日と判断）。何もせず終了します。")
         return
 
+    # 業績は波形を満たした銘柄だけ取りにいく。全銘柄分を毎日叩く必要はない。
     for m in results:
-        m["score"] = score(m)
+        m["fund"] = None
+    if results and not args.no_fundamentals:
+        print(f"候補 {len(results)} 銘柄の業績データを取得中...")
+        with ThreadPoolExecutor(max_workers=min(args.workers, 4)) as pool:
+            for m, f in zip(results, pool.map(lambda x: fund.fetch(x["code"]), results)):
+                m["fund"] = f
+        missing = sum(1 for m in results if m["fund"] is None)
+        if missing:
+            print(f"[WARN] {missing} 銘柄は業績データを取得できませんでした（業績調整なしで掲載します）。")
+
+    for m in results:
+        m["wave_score"] = score(m)
+        m["grade"] = fund.grade(m["fund"])
+        m["fund_adjust"] = fund.GRADE_ADJUST[m["grade"]]
+        m["score"] = m["wave_score"] + m["fund_adjust"]
+
+    if args.exclude_bad:
+        dropped = [m for m in results if m["grade"] == "✕"]
+        results = [m for m in results if m["grade"] != "✕"]
+        if dropped:
+            print(f"減収減益の {len(dropped)} 銘柄を除外しました: "
+                  + "、".join(f"{m['code']} {m['name']}" for m in dropped))
+
     results.sort(key=lambda m: m["score"], reverse=True)
     picks = results[: args.top]
 
@@ -505,6 +585,7 @@ def run(args: argparse.Namespace) -> None:
         "analyzed": fetched,
         "passed": len(results),
         "data_date": data_date.strftime("%Y-%m-%d"),
+        "earnings_warn": args.earnings_warn,
     }
 
     print_console(picks, stats)
@@ -525,7 +606,14 @@ def run(args: argparse.Namespace) -> None:
                 "picks": [
                     {
                         "code": m["code"], "name": m["name"], "close": m["close"],
-                        "score": m["score"], "retrace": m["retrace"],
+                        "score": m["score"], "wave_score": m["wave_score"],
+                        "grade": m["grade"], "fund_adjust": m["fund_adjust"],
+                        "revenue_growth": (m["fund"] or {}).get("revenue_growth"),
+                        "earnings_growth": (m["fund"] or {}).get("earnings_growth"),
+                        "per": (m["fund"] or {}).get("per"),
+                        "pbr": (m["fund"] or {}).get("pbr"),
+                        "earnings_date": str((m["fund"] or {}).get("earnings_date") or ""),
+                        "retrace": m["retrace"],
                         "cross_agree": m["cross_agree"], "l2_confirmed": m["l2_confirmed"],
                         "swing_pct": m["swing_pct"],
                         "wave1_pct": m["wave1_pct"], "days_since": m["days_since"],
@@ -570,6 +658,9 @@ def main() -> None:
     parser.add_argument("--swing", type=float, default=4.0, metavar="パーセント", help="転換点とみなす逆行率の下限 (デフォルト: 4%%)")
     parser.add_argument("--swing-atr", type=float, default=2.5, metavar="倍", help="転換点の閾値をATRの何倍にするか (デフォルト: 2.5)")
     parser.add_argument("--cross-swing", type=float, default=4.0, metavar="パーセント", help="波形の照合に使う固定閾値。0で照合しない (デフォルト: 4%%)")
+    parser.add_argument("--no-fundamentals", action="store_true", help="業績データを取得せず、波形だけで判定する")
+    parser.add_argument("--exclude-bad", action="store_true", help="減収減益 (✕) の銘柄を除外する")
+    parser.add_argument("--earnings-warn", type=int, default=7, metavar="日数", help="決算発表が何日以内なら警告するか (デフォルト: 7)")
     parser.add_argument("--min-turnover", type=float, default=10, metavar="億円", help="20日平均売買代金の下限 (デフォルト: 10億円)")
     parser.add_argument("--min-price", type=float, default=300, metavar="円", help="株価の下限 (デフォルト: 300円)")
     parser.add_argument("--max-price", type=float, default=0, metavar="円", help="株価の上限 (0で無制限)")
