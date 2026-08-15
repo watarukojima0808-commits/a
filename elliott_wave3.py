@@ -113,6 +113,36 @@ def avg_volume(bars: list[Bar], start: int, end: int) -> float:
 # 波動の検出
 # --------------------------------------------------------------------------
 
+def find_wave(bars: list[Bar], pct: float) -> tuple[Pivot, Pivot, Pivot] | None:
+    """直近の 安値 → 高値 → 安値 (= 1波の起点, 1波の頂点, 2波の底) を返す。"""
+    seq = zigzag(bars, pct)
+
+    # 末尾が未確定の高値なら、それは3波の初動そのものとみなして外し、
+    # その手前の「安値 = 2波の底」を評価対象にする。
+    if seq and seq[-1].kind == "H" and not seq[-1].confirmed:
+        seq = seq[:-1]
+    if len(seq) < 3:
+        return None
+
+    l2, h1, l0 = seq[-1], seq[-2], seq[-3]
+    if (l2.kind, h1.kind, l0.kind) != ("L", "H", "L"):
+        return None
+    return l0, h1, l2
+
+
+def cross_check(bars: list[Bar], h1: Pivot, l2: Pivot, pct: float) -> bool:
+    """別の閾値でも同じ波形が見えるか。ノイズを1波2波と読んでいないかの確認。
+
+    チャートツールのエリオット指標は 4% 前後の固定閾値が多く、そちらでも同じ底が
+    出るなら、閾値の取り方に依存しない波形といえる。
+    """
+    found = find_wave(bars, pct)
+    if found is None:
+        return False
+    _, h1b, l2b = found
+    return abs(l2b.idx - l2.idx) <= 2 and abs(h1b.idx - h1.idx) <= 3
+
+
 def detect(code: str, name: str, bars: list[Bar], args: argparse.Namespace) -> dict | None:
     if len(bars) < MIN_BARS:
         return None
@@ -132,19 +162,10 @@ def detect(code: str, name: str, bars: list[Bar], args: argparse.Namespace) -> d
 
     # 値動きの荒い銘柄ほど、ノイズを転換点と誤認しないよう閾値を広げる。
     pct = min(max(args.swing, atr_pct * args.swing_atr) / 100, 0.12)
-    pivots = zigzag(bars, pct)
-
-    # 末尾が未確定の高値なら、それは3波の初動そのものとみなして外し、
-    # その手前の「安値 = 2波の底」を評価対象にする。
-    seq = pivots
-    if seq and seq[-1].kind == "H" and not seq[-1].confirmed:
-        seq = seq[:-1]
-    if len(seq) < 3:
+    found = find_wave(bars, pct)
+    if found is None:
         return None
-
-    l2, h1, l0 = seq[-1], seq[-2], seq[-3]
-    if (l2.kind, h1.kind, l0.kind) != ("L", "H", "L"):
-        return None
+    l0, h1, l2 = found
 
     wave1 = h1.price - l0.price
     wave2 = h1.price - l2.price
@@ -195,6 +216,11 @@ def detect(code: str, name: str, bars: list[Bar], args: argparse.Namespace) -> d
         "atr_pct": atr_pct,
         "turnover": turnover,
         "swing_pct": pct * 100,
+        "cross_pct": args.cross_swing,
+        "cross_agree": (
+            cross_check(bars, h1, l2, args.cross_swing / 100)
+            if args.cross_swing > 0 else None
+        ),
         "l0_date": bars[l0.idx].date,
         "l0": l0.price,
         "h1_date": bars[h1.idx].date,
@@ -238,18 +264,18 @@ def detect(code: str, name: str, bars: list[Bar], args: argparse.Namespace) -> d
 
 def score(m: dict) -> float:
     """3波入りの確度を100点満点で採点する。"""
-    # 押しの深さ (30点)。0.5〜0.618 が最も2波らしい。浅すぎ・深すぎは減点。
+    # 押しの深さ (25点)。0.5〜0.618 が最も2波らしい。浅すぎ・深すぎは減点。
     r = m["retrace"]
     if 0.5 <= r <= 0.618:
-        fib = 30.0
+        fib = 25.0
     elif r < 0.5:
-        fib = max(0.0, 30 - (0.5 - r) * 60)
+        fib = max(0.0, 25 - (0.5 - r) * 50)
     else:
-        fib = max(0.0, 30 - (r - 0.618) * 70)
+        fib = max(0.0, 25 - (r - 0.618) * 58)
 
-    # 2波での出来高減少 (20点)。押し目で薄商いなら売り圧力が枯れている。
+    # 2波での出来高減少 (18点)。押し目で薄商いなら売り圧力が枯れている。
     contraction = m["vol_contraction"]
-    dry = min(max(1.1 - contraction, 0.0) / 0.5, 1.0) * 20 if contraction else 0.0
+    dry = min(max(1.1 - contraction, 0.0) / 0.5, 1.0) * 18 if contraction else 0.0
 
     # 反発の勢い (20点)。5日線回復・出来高増加・直近3日の上昇。
     momentum = 0.0
@@ -261,20 +287,35 @@ def score(m: dict) -> float:
     # 1波の力強さ (15点)。値幅と、ATR何個分動いたか。
     impulse = min(m["wave1_pct"] / 20.0, 1.0) * 8 + min(m["wave1_atr"] / 12.0, 1.0) * 7
 
-    # 地合い (15点)。中期が上向きで、1波が底から出ているか。
+    # 地合い (12点)。中期が上向きで、1波が底から出ているか。
     trend = 0.0
     if m["sma25"] > m["sma75"]:
-        trend += 6
+        trend += 5
     if m["close"] > m["sma75"]:
         trend += 4
     if m["fresh_base"]:
-        trend += 5
+        trend += 3
 
-    return fib + dry + momentum + impulse + trend
+    base = fib + dry + momentum + impulse + trend
+    if m["cross_agree"] is None:
+        # 照合を切っている場合は90点満点になるため、100点満点に伸ばし直す。
+        return base * 100 / 90
+
+    # 波形の頑健性 (10点)。閾値を変えても同じ2波が見えるか。
+    return base + (10.0 if m["cross_agree"] else 0.0)
+
+
+def cross_mark(m: dict) -> str:
+    """照合結果の表示。照合を切っている場合は判定なしを示す。"""
+    if m["cross_agree"] is None:
+        return "…"
+    return "○" if m["cross_agree"] else "−"
 
 
 def label(m: dict) -> str:
     tags = []
+    if m["cross_agree"]:
+        tags.append(f"{m['cross_pct']:.0f}%閾値でも同じ底")
     r = m["retrace"]
     if r < 0.382:
         tags.append("浅い押し")
@@ -309,26 +350,27 @@ def label(m: dict) -> str:
 def print_console(picks: list[dict], stats: dict) -> None:
     now = datetime.now(JST)
     print()
-    print("=" * 82)
+    print("=" * 96)
     print(f" エリオット3波入り候補  {now:%Y-%m-%d (%a) %H:%M} JST  ({stats['data_date']} 終値ベース)")
-    print("=" * 82)
+    print("=" * 96)
 
     if not picks:
         print("\n条件を満たす銘柄がありませんでした。--min-wave1 を下げるか --max-age を広げてください。\n")
         return
 
     print(f"{'#':>2} {'コード':<6} {'銘柄':<14} {'終値':>9} {'1波':>7} {'押し':>6} "
-          f"{'反発':>6} {'経過':>5} {'RR':>5} {'点':>4}")
-    print("-" * 82)
+          f"{'反発':>6} {'経過':>5} {'RR':>5} {'照合':>4} {'底':>6} {'点':>4}")
+    print("-" * 96)
     for i, m in enumerate(picks, 1):
         name = m["name"][:12]
         pad = " " * max(1, 14 - sum(2 if ord(ch) > 0x2E80 else 1 for ch in name))
         print(
             f"{i:>2} {m['code']:<6} {name}{pad}{m['close']:>9,.0f} {m['wave1_pct']:>+6.1f}% "
             f"{m['retrace'] * 100:>5.0f}% {m['rebound_pct']:>+5.1f}% {m['days_since']:>4}日 "
-            f"{m['rr']:>4.1f} {m['score']:>4.0f}"
+            f"{m['rr']:>4.1f} {cross_mark(m):>3} "
+            f"{'確定' if m['l2_confirmed'] else '未確定':>4} {m['score']:>4.0f}"
         )
-    print("-" * 82)
+    print("-" * 96)
     for i, m in enumerate(picks, 1):
         print(f"{i:>2}. {m['code']} {m['name']}: {label(m)}")
     print()
@@ -348,16 +390,30 @@ def format_report(picks: list[dict], stats: dict) -> str:
           "押しが浅すぎる／深すぎる状態です。\n")
         return out.getvalue()
 
-    w("| # | コード | 銘柄 | 終値 | 1波 | 押し戻し | 底から | 経過 | 目標(1.618) | 損切り | RR | スコア |\n")
-    w("|---|--------|------|------|-----|----------|--------|------|-------------|--------|----|--------|\n")
+    agreed = [m for m in picks if m["cross_agree"]]
+    if agreed:
+        names = "、".join("{} {}".format(m["code"], m["name"]) for m in agreed)
+        w(f"うち **{len(agreed)}銘柄** は閾値を変えても同じ2波の底が出ています (照合 ○): {names}\n\n")
+
+    w("| # | コード | 銘柄 | 終値 | 1波 | 押し戻し | 底から | 経過 | 目標(1.618) | 損切り | RR | 照合 | 底 | スコア |\n")
+    w("|---|--------|------|------|-----|----------|--------|------|-------------|--------|----|------|----|--------|\n")
     for i, m in enumerate(picks, 1):
         w(
             f"| {i} | {m['code']} | {m['name']} | {m['close']:,.0f} | {m['wave1_pct']:+.1f}% | "
             f"{m['retrace'] * 100:.0f}% | {m['rebound_pct']:+.1f}% | {m['days_since']}日 | "
-            f"{m['target162']:,.0f} | {m['stop']:,.0f} | {m['rr']:.1f} | {m['score']:.0f} |\n"
+            f"{m['target162']:,.0f} | {m['stop']:,.0f} | {m['rr']:.1f} | "
+            f"{cross_mark(m)} | {'確定' if m['l2_confirmed'] else '未確定'} | "
+            f"{m['score']:.0f} |\n"
         )
+    if picks[0]["cross_agree"] is not None:
+        w("\n照合 ○ = 転換点の閾値を "
+          f"{picks[0]['cross_pct']:.0f}% に変えても同じ2波の底が出る（閾値の取り方に依存しない波形）。\n")
+    else:
+        w("\n照合 … = 照合を無効にして実行しています。\n")
+    w("底「未確定」= 2波の底からの反発がまだ閾値に届いておらず、"
+      "チャートツールのエリオット指標では通常まだカウントされない段階。\n\n")
 
-    w("\n## 銘柄メモ\n\n")
+    w("## 銘柄メモ\n\n")
     for i, m in enumerate(picks, 1):
         w(f"### {i}. {m['code']} {m['name']}  (スコア {m['score']:.0f})\n\n")
         w(f"- 特徴: {label(m)}\n")
@@ -370,6 +426,10 @@ def format_report(picks: list[dict], stats: dict) -> str:
         w(f"- 出来高: 1波 {m['vol_w1'] / 10000:,.0f}万株 → 2波 {m['vol_w2'] / 10000:,.0f}万株 "
           f"(比 {m['vol_contraction']:.2f}) → 反発後 {m['vol_reb'] / 10000:,.0f}万株 (比 {m['vol_rebound']:.2f})\n")
         w(f"- RSI(14) {m['rsi']:.0f} / 5日線 {m['sma5']:,.0f} / 25日線 {m['sma25']:,.0f} / 75日線 {m['sma75']:,.0f}\n")
+        w(f"- 波形の確からしさ: 転換点の閾値 {m['swing_pct']:.1f}% (ATR {m['atr_pct']:.1f}% × {m['swing_pct'] / m['atr_pct']:.1f}) で検出、"
+          f"{m['cross_pct']:.0f}%閾値でも "
+          f"{'**同じ2波の底を検出**' if m['cross_agree'] else '別の波形になる（この閾値でしか見えない）'}。"
+          f"2波の底は{'確定済み' if m['l2_confirmed'] else '**未確定**（反発がまだ閾値に届いていない）'}\n")
         w(f"- **エントリー目安**: 1波高値 {m['h1']:,.0f}円 の上抜けで3波確度が上がる\n")
         w(f"- **損切り**: {m['stop']:,.0f}円 (2波の底 {m['l2']:,.0f}円 の少し下 / 現値から {-m['risk_pct']:.1f}%) — "
           f"底を割ると、この波動の数え方自体が無効になる\n")
@@ -466,6 +526,8 @@ def run(args: argparse.Namespace) -> None:
                     {
                         "code": m["code"], "name": m["name"], "close": m["close"],
                         "score": m["score"], "retrace": m["retrace"],
+                        "cross_agree": m["cross_agree"], "l2_confirmed": m["l2_confirmed"],
+                        "swing_pct": m["swing_pct"],
                         "wave1_pct": m["wave1_pct"], "days_since": m["days_since"],
                         "l0": m["l0"], "l0_date": str(m["l0_date"]),
                         "h1": m["h1"], "h1_date": str(m["h1_date"]),
@@ -507,6 +569,7 @@ def main() -> None:
     parser.add_argument("--min-rr", type=float, default=1.0, metavar="倍", help="リスクリワード(1.618目標)の下限 (デフォルト: 1.0)")
     parser.add_argument("--swing", type=float, default=4.0, metavar="パーセント", help="転換点とみなす逆行率の下限 (デフォルト: 4%%)")
     parser.add_argument("--swing-atr", type=float, default=2.5, metavar="倍", help="転換点の閾値をATRの何倍にするか (デフォルト: 2.5)")
+    parser.add_argument("--cross-swing", type=float, default=4.0, metavar="パーセント", help="波形の照合に使う固定閾値。0で照合しない (デフォルト: 4%%)")
     parser.add_argument("--min-turnover", type=float, default=10, metavar="億円", help="20日平均売買代金の下限 (デフォルト: 10億円)")
     parser.add_argument("--min-price", type=float, default=300, metavar="円", help="株価の下限 (デフォルト: 300円)")
     parser.add_argument("--max-price", type=float, default=0, metavar="円", help="株価の上限 (0で無制限)")
