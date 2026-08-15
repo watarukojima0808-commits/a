@@ -1,0 +1,53 @@
+name: エリオット3波入り候補
+
+on:
+  schedule:
+    # 平日 17:00 JST (= UTC 08:00 月〜金)。大引け(15:30)後、その日の日足が確定してから走らせる。
+    - cron: '0 8 * * 1-5'
+  workflow_dispatch:
+
+# 同時実行を防ぐ (手動実行とスケジュールが重なった場合の push 衝突対策)
+concurrency:
+  group: elliott-wave3
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # --require-fresh により、休場日 (当日の日足が無い日) は何も出さずに正常終了する。
+      - name: スクリーニング実行
+        env:
+          GMAIL_FROM: ${{ secrets.GMAIL_FROM }}
+          GMAIL_TO: ${{ secrets.GMAIL_TO }}
+          GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+        run: |
+          python elliott_wave3.py \
+            --out-dir reports/elliott \
+            --workers 4 \
+            --require-fresh
+
+      # 過去の候補を残し、後から「3波は本当に来たか」を検証できるようにする。
+      - name: 結果をコミット
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/elliott
+          if git diff --staged --quiet; then
+            echo "変更なし"
+          else
+            git commit -m "エリオット3波入り候補 $(TZ=Asia/Tokyo date +%Y-%m-%d)"
+            # 同日中に他のワークフローが push していた場合に備えて、一度だけ取り込み直す。
+            git push || (git pull --rebase && git push)
+          fi
