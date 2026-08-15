@@ -62,13 +62,13 @@ var fibLabels = array.new<label>()
 var bigLines  = array.new<line>()
 
 //============================ 関数 ============================
-f_pct(float a, float b) =>
+f_pct(a, b) =>
     b == 0.0 ? 0.0 : math.abs(a - b) / math.abs(b) * 100.0
 
 // ジグザグ配列を更新する。配列に変化があれば true を返す。
 // 同方向のピボットはより極端な値で置き換え、逆方向は最小スイング幅を
 // 満たした場合のみ新しい波として追加する。
-f_addPivot(array<float> prices, array<int> bars, array<int> dirs, float price, int b, int dir, float minDev, int maxN) =>
+f_addPivot(prices, bars, dirs, price, b, dir, minDev, maxN) =>
     bool ch = false
     int n = array.size(prices)
     if n == 0
@@ -96,7 +96,7 @@ f_addPivot(array<float> prices, array<int> bars, array<int> dirs, float price, i
     ch
 
 // ピボット i を起点(波0)とする6点がエリオット推進波の原則を満たすか
-f_impulseOK(int i) =>
+f_impulseOK(i) =>
     float p0 = array.get(pvPrice, i)
     float p1 = array.get(pvPrice, i + 1)
     float p2 = array.get(pvPrice, i + 2)
@@ -170,21 +170,21 @@ f_partial1234() =>
             ok := p1 < p0 and p2 > p1 and p2 < p0 and p3 < p1 and p4 > p3 and (allowOverlap or p4 < p1)
     [ok, up]
 
-f_clearLines(array<line> a) =>
+f_clearLines(a) =>
     while array.size(a) > 0
         line.delete(array.pop(a))
 
-f_clearLabels(array<label> a) =>
+f_clearLabels(a) =>
     while array.size(a) > 0
         label.delete(array.pop(a))
 
 // 目標値の水平ラインとラベルを描画
-f_target(int x1, int x2, float y, string txt) =>
+f_target(x1, x2, y, txt) =>
     array.push(fibLines, line.new(x1, y, x2, y, xloc=xloc.bar_index, color=colFib, style=line.style_dashed))
     array.push(fibLabels, label.new(x2, y, txt, xloc=xloc.bar_index, style=label.style_label_left, color=color.new(colFib, 85), textcolor=colFib, size=size.small))
 
 // 波番号ラベルを描画
-f_waveLabel(int idx, string txt, color c) =>
+f_waveLabel(idx, txt, c) =>
     float p = array.get(pvPrice, idx)
     int   b = array.get(pvBar, idx)
     bool isHigh = array.get(pvDir, idx) == 1
@@ -244,7 +244,7 @@ if changed
             f_waveLabel(imp + k, k == 0 ? "0" : str.tostring(k), k == 0 ? color.new(colImp, 55) : colImp)
         // 続く修正波 A-B-C
         if showABC
-            string[] abc = array.from("A", "B", "C")
+            abc = array.from("A", "B", "C")
             for k = 0 to 2
                 int idx = imp + 6 + k
                 if idx < n
