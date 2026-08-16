@@ -18,6 +18,7 @@ from io import StringIO
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
+import jsf_margin as margin
 import yahoo_fundamentals as fund
 from nikkei_daytrade import (
     JST,
@@ -420,6 +421,27 @@ def fundamentals_lines(m: dict, warn_days: int) -> str:
     return "\n".join(out) + "\n"
 
 
+def margin_lines(m: dict) -> str:
+    """レポート用に需給を箇条書きで返す。"""
+    d = m["margin"]
+    out = [f"- **需給**: {margin.summary(d)}"]
+    if not d:
+        return "\n".join(out) + "\n"
+
+    def shares(v: float) -> str:
+        # 万株にすると数百株の動きが -0.0 に潰れるため、小さい値は株のまま出す。
+        return f"{v / 10000:,.1f}万株" if abs(v) >= 10000 else f"{v:,.0f}株"
+
+    detail = [
+        f"融資残 {shares(d['loan'])} (前日比 {shares(d['loan_change']) if d['loan_change'] < 0 else '+' + shares(d['loan_change'])})",
+        f"貸株残 {shares(d['short'])}",
+    ]
+    if d["turnover_days"]:
+        detail.append(f"回転日数 {d['turnover_days']:.1f}日")
+    out.append(f"- 貸借内訳: {' / '.join(detail)} ({d['date']}時点)")
+    return "\n".join(out) + "\n"
+
+
 def print_console(picks: list[dict], stats: dict) -> None:
     now = datetime.now(JST)
     print()
@@ -432,23 +454,24 @@ def print_console(picks: list[dict], stats: dict) -> None:
         return
 
     print(f"{'#':>2} {'コード':<6} {'銘柄':<14} {'終値':>9} {'1波':>7} {'押し':>6} "
-          f"{'経過':>5} {'照合':>4} {'底':>6} {'実績':>4} {'来期':>7} {'決算':>13} {'波形':>5} {'総合':>5}")
+          f"{'経過':>5} {'照合':>4} {'底':>6} {'実績':>4} {'来期':>7} {'貸借':>7} {'決':>3} "
+          f"{'波形':>5} {'総合':>5}")
     print("-" * 112)
     for i, m in enumerate(picks, 1):
         name = m["name"][:12]
         pad = " " * max(1, 14 - sum(2 if ord(ch) > 0x2E80 else 1 for ch in name))
-        note, warn = earnings_note(m, stats["earnings_warn"])
+        _, warn = earnings_note(m, stats["earnings_warn"])
         print(
             f"{i:>2} {m['code']:<6} {name}{pad}{m['close']:>9,.0f} {m['wave1_pct']:>+6.1f}% "
             f"{m['retrace'] * 100:>5.0f}% {m['days_since']:>4}日 "
             f"{cross_mark(m):>3} "
             f"{'確定' if m['l2_confirmed'] else '未確定':>4} {m['grade']:>3} "
-            f"{fund.guidance_text(m['fund']):>7} "
-            f"{(note + ' !') if warn else note:>13} {m['wave_score']:>5.0f} {m['score']:>5.0f}"
+            f"{fund.guidance_text(m['fund']):>7} {margin.ratio_text(m['margin']):>7} "
+            f"{'!' if warn else '':>3} {m['wave_score']:>5.0f} {m['score']:>5.0f}"
         )
     print("-" * 112)
     for i, m in enumerate(picks, 1):
-        print(f"{i:>2}. {m['code']} {m['name']}: {fund.summary(m['fund'])} / {label(m)}")
+        print(f"{i:>2}. {m['code']} {m['name']}: {fund.summary(m['fund'])} / {margin.summary(m['margin'])}")
     print()
 
 
@@ -471,8 +494,8 @@ def format_report(picks: list[dict], stats: dict) -> str:
         names = "、".join("{} {}".format(m["code"], m["name"]) for m in agreed)
         w(f"うち **{len(agreed)}銘柄** は閾値を変えても同じ2波の底が出ています (照合 ○): {names}\n\n")
 
-    w("| # | コード | 銘柄 | 終値 | 1波 | 押し戻し | 経過 | 目標(1.618) | 損切り | RR | 照合 | 底 | 実績 | 来期 | 決算 | 波形 | 総合 |\n")
-    w("|---|--------|------|------|-----|----------|------|-------------|--------|----|------|----|------|------|------|------|------|\n")
+    w("| # | コード | 銘柄 | 終値 | 1波 | 押し戻し | 経過 | 目標(1.618) | 損切り | RR | 照合 | 底 | 実績 | 来期 | 貸借倍率 | 決算 | 波形 | 総合 |\n")
+    w("|---|--------|------|------|-----|----------|------|-------------|--------|----|------|----|------|------|----------|------|------|------|\n")
     for i, m in enumerate(picks, 1):
         note, warn = earnings_note(m, stats["earnings_warn"])
         w(
@@ -481,6 +504,7 @@ def format_report(picks: list[dict], stats: dict) -> str:
             f"{m['target162']:,.0f} | {m['stop']:,.0f} | {m['rr']:.1f} | "
             f"{cross_mark(m)} | {'確定' if m['l2_confirmed'] else '未確定'} | "
             f"{m['grade']} | {fund.guidance_text(m['fund'])} | "
+            f"{margin.ratio_text(m['margin'])} | "
             f"{'**' + note + ' 直前**' if warn else note} | "
             f"{m['wave_score']:.0f} | {m['score']:.0f} |\n"
         )
@@ -493,15 +517,19 @@ def format_report(picks: list[dict], stats: dict) -> str:
       "チャートツールのエリオット指標では通常まだカウントされない段階。\n")
     w("実績 = 直近四半期の前年同期比（◎増収増益 / ○増益 / △減速 / ✕減収減益 / ?データなし）。"
       "来期 = アナリスト予想EPSの今期→来期の増減率。\n")
+    w("貸借倍率 = 融資残高(買い方) ÷ 貸株残高(売り方)。高いほど買い長で上値が重い。\n")
     w("総合 = 波形スコア(100点満点) + 実績調整(◎+8 / ○+3 / △-3 / ✕-12) "
-      "+ 来期調整(+10%以上 +5 / 0%以上 +2 / -10%まで -3 / それ以下 -6)。\n\n")
+      "+ 来期調整(+10%以上 +5 / 0%以上 +2 / -10%まで -3 / それ以下 -6) "
+      "+ 需給調整(-11〜+7)。\n\n")
 
     w("## 銘柄メモ\n\n")
     for i, m in enumerate(picks, 1):
         w(f"### {i}. {m['code']} {m['name']}  "
-          f"(総合 {m['score']:.0f} = 波形 {m['wave_score']:.0f} {m['fund_adjust']:+.0f})\n\n")
+          f"(総合 {m['score']:.0f} = 波形 {m['wave_score']:.0f} / "
+          f"業績 {m['fund_adjust']:+.0f} / 需給 {m['margin_adjust']:+.0f})\n\n")
         w(f"- 特徴: {label(m)}\n")
         w(fundamentals_lines(m, stats["earnings_warn"]))
+        w(margin_lines(m))
         w(f"- **1波**: {m['l0_date']} 安値 {m['l0']:,.0f}円 → {m['h1_date']} 高値 {m['h1']:,.0f}円 "
           f"({m['wave1_pct']:+.1f}% / {m['days_w1']}日 / ATR {m['wave1_atr']:.1f}個分)\n")
         w(f"- **2波**: {m['h1_date']} → {m['l2_date']} 安値 {m['l2']:,.0f}円 "
@@ -593,13 +621,23 @@ def run(args: argparse.Namespace) -> None:
         if missing:
             print(f"[WARN] {missing} 銘柄は業績データを取得できませんでした（業績調整なしで掲載します）。")
 
+    # 需給は全銘柄分が1つのCSVに入っているため、1リクエストで足りる。
+    for m in results:
+        m["margin"] = None
+    if results and not args.no_margin:
+        print("貸借取引残高（需給）を取得中...")
+        margin.load()
+        for m in results:
+            m["margin"] = margin.fetch(m["code"])
+
     for m in results:
         m["wave_score"] = score(m)
         m["grade"] = fund.grade(m["fund"])
         m["grade_adjust"] = fund.GRADE_ADJUST[m["grade"]]
         m["guidance_adjust"] = fund.guidance_adjust(m["fund"])
+        m["margin_adjust"] = margin.adjust(m["margin"])
         m["fund_adjust"] = m["grade_adjust"] + m["guidance_adjust"]
-        m["score"] = m["wave_score"] + m["fund_adjust"]
+        m["score"] = m["wave_score"] + m["fund_adjust"] + m["margin_adjust"]
 
     if args.exclude_bad:
         dropped = [m for m in results if m["grade"] == "✕"]
@@ -642,6 +680,9 @@ def run(args: argparse.Namespace) -> None:
                         "earnings_growth": (m["fund"] or {}).get("earnings_growth"),
                         "eps_growth_next_year": (m["fund"] or {}).get("eps_growth"),
                         "last_surprise": (m["fund"] or {}).get("last_surprise"),
+                        "margin_ratio": (m["margin"] or {}).get("ratio"),
+                        "margin_loan": (m["margin"] or {}).get("loan"),
+                        "margin_adjust": m["margin_adjust"],
                         "per": (m["fund"] or {}).get("per"),
                         "pbr": (m["fund"] or {}).get("pbr"),
                         "earnings_date": str((m["fund"] or {}).get("earnings_date") or ""),
@@ -691,6 +732,7 @@ def main() -> None:
     parser.add_argument("--swing-atr", type=float, default=2.5, metavar="倍", help="転換点の閾値をATRの何倍にするか (デフォルト: 2.5)")
     parser.add_argument("--cross-swing", type=float, default=4.0, metavar="パーセント", help="波形の照合に使う固定閾値。0で照合しない (デフォルト: 4%%)")
     parser.add_argument("--no-fundamentals", action="store_true", help="業績データを取得せず、波形だけで判定する")
+    parser.add_argument("--no-margin", action="store_true", help="貸借取引残高（需給）を取得しない")
     parser.add_argument("--exclude-bad", action="store_true", help="減収減益 (✕) の銘柄を除外する")
     parser.add_argument("--earnings-warn", type=int, default=7, metavar="日数", help="決算発表が何日以内なら警告するか (デフォルト: 7)")
     parser.add_argument("--min-turnover", type=float, default=10, metavar="億円", help="20日平均売買代金の下限 (デフォルト: 10億円)")
