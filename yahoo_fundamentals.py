@@ -35,9 +35,13 @@ HEADERS = {
 
 QUOTE_PAGE = "https://finance.yahoo.com/quote/{symbol}"
 CRUMB_URL = "https://query1.finance.yahoo.com/v1/test/getcrumb"
+MODULES = (
+    "financialData,defaultKeyStatistics,calendarEvents,summaryDetail,"
+    "earningsTrend,earningsHistory,earnings"
+)
 SUMMARY_URL = (
     "https://query1.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
-    "?modules=financialData,defaultKeyStatistics,calendarEvents,summaryDetail&crumb={crumb}"
+    "?modules={modules}&crumb={crumb}"
 )
 
 _lock = threading.Lock()
@@ -91,7 +95,7 @@ def fetch(code: str, retries: int = 2) -> dict | None:
 
     for attempt in range(retries):
         try:
-            raw = _open(opener, SUMMARY_URL.format(symbol=f"{code}.T", crumb=crumb))
+            raw = _open(opener, SUMMARY_URL.format(symbol=f"{code}.T", modules=MODULES, crumb=crumb))
             break
         except (urllib.error.URLError, TimeoutError):
             if attempt == retries - 1:
@@ -121,7 +125,62 @@ def fetch(code: str, retries: int = 2) -> dict | None:
             earnings_date = datetime.fromtimestamp(ts, JST).date()
             break
 
+    # アナリストの通期コンセンサス。0y = 今期、+1y = 来期。
+    # 日本株は Yahoo 側で growth が計算されていないため、EPS予想から自分で出す。
+    trend = {t.get("period"): t for t in ((r.get("earningsTrend") or {}).get("trend") or [])}
+
+    def est(period: str, node: str) -> float | None:
+        t = trend.get(period) or {}
+        return _raw(t.get(node) or {}, "avg")
+
+    eps_now, eps_next = est("0y", "earningsEstimate"), est("+1y", "earningsEstimate")
+    rev_now, rev_next = est("0y", "revenueEstimate"), est("+1y", "revenueEstimate")
+    analysts_fy = _raw((trend.get("+1y") or {}).get("earningsEstimate") or {}, "numberOfAnalysts")
+
+    def growth(now: float | None, nxt: float | None) -> float | None:
+        # 赤字予想からの回復は率にすると桁が壊れるため、プラス同士のときだけ出す。
+        if now is None or nxt is None or now <= 0:
+            return None
+        return nxt / now - 1
+
+    # 前回決算がコンセンサスに対してどうだったか。
+    history = (r.get("earningsHistory") or {}).get("history") or []
+    surprises = [
+        {
+            "quarter": (h.get("quarter") or {}).get("fmt"),
+            "actual": _raw(h, "epsActual"),
+            "estimate": _raw(h, "epsEstimate"),
+            "surprise": _raw(h, "surprisePercent"),
+        }
+        for h in history
+    ]
+    last = surprises[-1] if surprises else None
+    beats = sum(1 for s in surprises if (s["surprise"] or 0) > 0)
+
+    yearly = [
+        {
+            "year": y.get("date"),
+            "revenue": _raw(y, "revenue"),
+            "earnings": _raw(y, "earnings"),
+        }
+        for y in ((r.get("earnings") or {}).get("financialsChart") or {}).get("yearly", [])
+    ]
+
     return {
+        "eps_now": eps_now,
+        "eps_next": eps_next,
+        "eps_growth": growth(eps_now, eps_next),
+        "revenue_next_growth": growth(rev_now, rev_next),
+        "fy_now_end": (trend.get("0y") or {}).get("endDate"),
+        "fy_next_end": (trend.get("+1y") or {}).get("endDate"),
+        "analysts_fy": analysts_fy,
+        "last_quarter": last["quarter"] if last else None,
+        "last_actual": last["actual"] if last else None,
+        "last_estimate": last["estimate"] if last else None,
+        "last_surprise": last["surprise"] if last else None,
+        "beats": beats,
+        "quarters": len(surprises),
+        "yearly": yearly,
         "revenue_growth": _raw(fin, "revenueGrowth"),
         "earnings_growth": _raw(fin, "earningsGrowth"),
         "operating_margin": _raw(fin, "operatingMargins"),
@@ -171,6 +230,35 @@ def grade(f: dict | None) -> str:
     if earn >= 0.10:
         return "◎"
     return "○"
+
+
+def guidance_adjust(f: dict | None) -> float:
+    """来期のコンセンサスEPSが今期比でどうかを、波形スコアへの調整値にする。"""
+    g = (f or {}).get("eps_growth")
+    if g is None:
+        return 0.0
+    if g >= 0.10:
+        return 5.0
+    if g >= 0:
+        return 2.0
+    if g > -0.10:
+        return -3.0
+    return -6.0
+
+
+def guidance_text(f: dict | None) -> str:
+    """「+14.8%」形式。予想が取れない場合は「—」。"""
+    g = (f or {}).get("eps_growth")
+    return "—" if g is None else f"{g * 100:+.1f}%"
+
+
+def surprise_text(f: dict | None) -> str:
+    """前回決算がコンセンサスに対して上振れたか下振れたか。"""
+    if not f or f.get("last_surprise") is None:
+        return "—"
+    s = f["last_surprise"] * 100
+    word = "上振れ" if s > 0 else "下振れ"
+    return f"{f['last_quarter']} {word} {s:+.1f}%"
 
 
 def summary(f: dict | None) -> str:

@@ -327,6 +327,10 @@ def cross_mark(m: dict) -> str:
 
 def label(m: dict) -> str:
     tags = []
+    growth = (m["fund"] or {}).get("eps_growth")
+    if growth is not None and growth >= 0.5:
+        # 倍増予想は「今期が落ち込んでいる」ことの裏返しでもあるので、そう書く。
+        tags.append("来期は落ち込みからの回復予想")
     if m["cross_agree"]:
         tags.append(f"{m['cross_pct']:.0f}%閾値でも同じ底")
     r = m["retrace"]
@@ -382,6 +386,26 @@ def fundamentals_lines(m: dict, warn_days: int) -> str:
     if ratios:
         out.append(f"- 指標: {' / '.join(ratios)}")
 
+    if f["eps_growth"] is not None:
+        out.append(
+            f"- **来期予想**: EPS {f['eps_now']:,.1f}円 ({f['fy_now_end']}期) → "
+            f"{f['eps_next']:,.1f}円 ({f['fy_next_end']}期) = **{f['eps_growth'] * 100:+.1f}%**"
+            + (f" / アナリスト{f['analysts_fy']:.0f}人" if f["analysts_fy"] else "")
+        )
+    if f["last_surprise"] is not None:
+        out.append(
+            f"- 前回決算: {fund.surprise_text(f)} "
+            f"(実績EPS {f['last_actual']:,.2f}円 vs 予想 {f['last_estimate']:,.2f}円) / "
+            f"直近{f['quarters']}四半期で{f['beats']}回上振れ"
+        )
+    if len(f["yearly"]) >= 2:
+        trail = " → ".join(
+            f"{y['year']}年 {y['earnings'] / 100_000_000:,.0f}億"
+            for y in f["yearly"] if y["earnings"] is not None
+        )
+        if trail:
+            out.append(f"- 通期純利益の推移: {trail}")
+
     if f["target_mean"] and f["analysts"]:
         gap = (f["target_mean"] / m["close"] - 1) * 100
         out.append(
@@ -408,8 +432,8 @@ def print_console(picks: list[dict], stats: dict) -> None:
         return
 
     print(f"{'#':>2} {'コード':<6} {'銘柄':<14} {'終値':>9} {'1波':>7} {'押し':>6} "
-          f"{'経過':>5} {'RR':>5} {'照合':>4} {'底':>6} {'業績':>4} {'決算':>12} {'波形':>5} {'総合':>5}")
-    print("-" * 108)
+          f"{'経過':>5} {'照合':>4} {'底':>6} {'実績':>4} {'来期':>7} {'決算':>13} {'波形':>5} {'総合':>5}")
+    print("-" * 112)
     for i, m in enumerate(picks, 1):
         name = m["name"][:12]
         pad = " " * max(1, 14 - sum(2 if ord(ch) > 0x2E80 else 1 for ch in name))
@@ -417,11 +441,12 @@ def print_console(picks: list[dict], stats: dict) -> None:
         print(
             f"{i:>2} {m['code']:<6} {name}{pad}{m['close']:>9,.0f} {m['wave1_pct']:>+6.1f}% "
             f"{m['retrace'] * 100:>5.0f}% {m['days_since']:>4}日 "
-            f"{m['rr']:>4.1f} {cross_mark(m):>3} "
+            f"{cross_mark(m):>3} "
             f"{'確定' if m['l2_confirmed'] else '未確定':>4} {m['grade']:>3} "
-            f"{(note + ' !') if warn else note:>12} {m['wave_score']:>5.0f} {m['score']:>5.0f}"
+            f"{fund.guidance_text(m['fund']):>7} "
+            f"{(note + ' !') if warn else note:>13} {m['wave_score']:>5.0f} {m['score']:>5.0f}"
         )
-    print("-" * 108)
+    print("-" * 112)
     for i, m in enumerate(picks, 1):
         print(f"{i:>2}. {m['code']} {m['name']}: {fund.summary(m['fund'])} / {label(m)}")
     print()
@@ -446,8 +471,8 @@ def format_report(picks: list[dict], stats: dict) -> str:
         names = "、".join("{} {}".format(m["code"], m["name"]) for m in agreed)
         w(f"うち **{len(agreed)}銘柄** は閾値を変えても同じ2波の底が出ています (照合 ○): {names}\n\n")
 
-    w("| # | コード | 銘柄 | 終値 | 1波 | 押し戻し | 経過 | 目標(1.618) | 損切り | RR | 照合 | 底 | 業績 | 決算 | 波形 | 総合 |\n")
-    w("|---|--------|------|------|-----|----------|------|-------------|--------|----|------|----|------|------|------|------|\n")
+    w("| # | コード | 銘柄 | 終値 | 1波 | 押し戻し | 経過 | 目標(1.618) | 損切り | RR | 照合 | 底 | 実績 | 来期 | 決算 | 波形 | 総合 |\n")
+    w("|---|--------|------|------|-----|----------|------|-------------|--------|----|------|----|------|------|------|------|------|\n")
     for i, m in enumerate(picks, 1):
         note, warn = earnings_note(m, stats["earnings_warn"])
         w(
@@ -455,7 +480,8 @@ def format_report(picks: list[dict], stats: dict) -> str:
             f"{m['retrace'] * 100:.0f}% | {m['days_since']}日 | "
             f"{m['target162']:,.0f} | {m['stop']:,.0f} | {m['rr']:.1f} | "
             f"{cross_mark(m)} | {'確定' if m['l2_confirmed'] else '未確定'} | "
-            f"{m['grade']} | {'**' + note + ' 直前**' if warn else note} | "
+            f"{m['grade']} | {fund.guidance_text(m['fund'])} | "
+            f"{'**' + note + ' 直前**' if warn else note} | "
             f"{m['wave_score']:.0f} | {m['score']:.0f} |\n"
         )
     if picks[0]["cross_agree"] is not None:
@@ -465,8 +491,10 @@ def format_report(picks: list[dict], stats: dict) -> str:
         w("\n照合 … = 照合を無効にして実行しています。\n")
     w("底「未確定」= 2波の底からの反発がまだ閾値に届いておらず、"
       "チャートツールのエリオット指標では通常まだカウントされない段階。\n")
-    w("業績 = 直近四半期の前年同期比（◎増収増益 / ○増益 / △減速 / ✕減収減益 / ?データなし）。"
-      "総合 = 波形スコア + 業績調整（◎+8 / ○+3 / △-3 / ✕-12）。\n\n")
+    w("実績 = 直近四半期の前年同期比（◎増収増益 / ○増益 / △減速 / ✕減収減益 / ?データなし）。"
+      "来期 = アナリスト予想EPSの今期→来期の増減率。\n")
+    w("総合 = 波形スコア(100点満点) + 実績調整(◎+8 / ○+3 / △-3 / ✕-12) "
+      "+ 来期調整(+10%以上 +5 / 0%以上 +2 / -10%まで -3 / それ以下 -6)。\n\n")
 
     w("## 銘柄メモ\n\n")
     for i, m in enumerate(picks, 1):
@@ -568,7 +596,9 @@ def run(args: argparse.Namespace) -> None:
     for m in results:
         m["wave_score"] = score(m)
         m["grade"] = fund.grade(m["fund"])
-        m["fund_adjust"] = fund.GRADE_ADJUST[m["grade"]]
+        m["grade_adjust"] = fund.GRADE_ADJUST[m["grade"]]
+        m["guidance_adjust"] = fund.guidance_adjust(m["fund"])
+        m["fund_adjust"] = m["grade_adjust"] + m["guidance_adjust"]
         m["score"] = m["wave_score"] + m["fund_adjust"]
 
     if args.exclude_bad:
@@ -610,6 +640,8 @@ def run(args: argparse.Namespace) -> None:
                         "grade": m["grade"], "fund_adjust": m["fund_adjust"],
                         "revenue_growth": (m["fund"] or {}).get("revenue_growth"),
                         "earnings_growth": (m["fund"] or {}).get("earnings_growth"),
+                        "eps_growth_next_year": (m["fund"] or {}).get("eps_growth"),
+                        "last_surprise": (m["fund"] or {}).get("last_surprise"),
                         "per": (m["fund"] or {}).get("per"),
                         "pbr": (m["fund"] or {}).get("pbr"),
                         "earnings_date": str((m["fund"] or {}).get("earnings_date") or ""),
