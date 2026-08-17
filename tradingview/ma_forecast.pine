@@ -1,0 +1,237 @@
+//@version=6
+// =============================================================================
+//  移動平均フォーキャスト (MA Forecast)
+//
+//  移動平均は「過去 N 本の平均」なので、将来の値の大部分は現時点で既に確定して
+//  いる。未確定なのは「これから入ってくる価格」だけ。
+//  このインジケーターは将来の価格に仮定を置き、そこから決まる移動平均の通り道を
+//  チャート右側に描く。ゴールデンクロス/デッドクロスの到来時期の目安にも使う。
+//
+//  ※ 予測は「置いた仮定が当たった場合の値」であって、相場の予言ではない。
+// =============================================================================
+
+indicator("移動平均フォーキャスト (MA Forecast)", "MA Forecast", overlay = true,
+     max_bars_back = 500, max_lines_count = 100, max_labels_count = 50,
+     max_polylines_count = 20)
+
+// ── 入力 ─────────────────────────────────────────────────────────────────────
+gMA = "移動平均"
+src    = input.source(close, "ソース", group = gMA)
+maType = input.string("SMA", "種別", options = ["SMA", "EMA", "WMA", "RMA"], group = gMA)
+len1   = input.int(25, "短期の期間", minval = 1, maxval = 400, group = gMA)
+useMA2 = input.bool(true, "長期も使う", group = gMA)
+len2   = input.int(75, "長期の期間", minval = 1, maxval = 400, group = gMA)
+drawMA = input.bool(true, "実線の移動平均も描く", group = gMA)
+
+gFC = "予測"
+fcLen  = input.int(10, "予測する本数", minval = 1, maxval = 200, group = gFC,
+     tooltip = "何本先まで移動平均を描くか。期間より長くすると仮定への依存が急に大きくなる。")
+mode   = input.string("横ばい", "将来の価格の置き方",
+     options = ["横ばい", "直近の傾き", "変化率(%/本)", "目標価格まで直線"], group = gFC,
+     tooltip = "横ばい     : 現在値のまま推移すると仮定（最も中立）\n" +
+               "直近の傾き : 直近の線形回帰の傾きが続くと仮定\n" +
+               "変化率     : 毎足 x% ずつ動くと仮定\n" +
+               "目標価格   : 予測本数をかけて目標価格まで直線で動くと仮定")
+slopeLen = input.int(10, "傾きの計算期間", minval = 2, group = gFC)
+pctBar   = input.float(0.0, "1本あたりの変化率 (%)", step = 0.1, group = gFC)
+tgtPrice = input.price(0.0, "目標価格", group = gFC)
+drawPath = input.bool(true, "想定した価格の推移も描く", group = gFC)
+
+gVW = "表示"
+col1     = input.color(color.new(#2962ff, 0), "短期", inline = "c1", group = gVW)
+col2     = input.color(color.new(#ff6d00, 0), "長期", inline = "c1", group = gVW)
+colPath  = input.color(color.new(#787b86, 30), "想定価格", inline = "c2", group = gVW)
+colGC    = input.color(color.new(#26a69a, 0), "GC", inline = "c2", group = gVW)
+colDC    = input.color(color.new(#ef5350, 0), "DC", inline = "c2", group = gVW)
+showTbl  = input.bool(true, "情報パネルを表示", group = gVW)
+showBE   = input.bool(true, "次足の分岐点価格を表示", group = gVW,
+     tooltip = "次の足がこの価格で引けると短期移動平均が横ばいになる。上回れば上向き、下回れば下向き。")
+
+// ── 移動平均本体 ─────────────────────────────────────────────────────────────
+ma(source, length, t) =>
+    switch t
+        "SMA" => ta.sma(source, length)
+        "EMA" => ta.ema(source, length)
+        "WMA" => ta.wma(source, length)
+        "RMA" => ta.rma(source, length)
+        => ta.sma(source, length)
+
+cur1 = ma(src, len1, maType)
+cur2 = ma(src, len2, maType)
+
+plot(drawMA ? cur1 : na, "短期MA", color = col1, linewidth = 2)
+plot(drawMA and useMA2 ? cur2 : na, "長期MA", color = col2, linewidth = 2)
+
+// 直近の傾き（1本あたりの価格変化）
+slope = ta.linreg(src, slopeLen, 0) - ta.linreg(src, slopeLen, 1)
+
+// ── 価格パス上の 1 点を返す ──────────────────────────────────────────────────
+//   j <= 0 : 過去（j=0 が現在足）、j >= 1 : 予測 j 本目
+pathVal(source, proj, j) =>
+    back = j <= 0 ? -j : 0
+    j <= 0 ? source[back] : array.get(proj, math.max(j - 1, 0))
+
+// ── 将来の価格パスを作る ────────────────────────────────────────────────────
+buildPath(base, n) =>
+    out = array.new<float>()
+    for k = 1 to n
+        p = switch mode
+            "横ばい"           => base
+            "直近の傾き"       => base + slope * k
+            "変化率(%/本)"     => base * math.pow(1.0 + pctBar / 100.0, k)
+            "目標価格まで直線" => tgtPrice > 0 ? base + (tgtPrice - base) * k / n : base
+            => base
+        array.push(out, p)
+    out
+
+// ── 将来の移動平均を作る ────────────────────────────────────────────────────
+//   SMA  : 合計から「窓を出る価格」を引き「入る価格」を足していくだけ
+//   EMA/RMA : 漸化式をそのまま回す
+//   WMA  : 毎ステップ窓を張り直して加重平均
+fcMA(source, length, n, proj, curMA) =>
+    out = array.new<float>()
+    if maType == "EMA" or maType == "RMA"
+        alpha = maType == "EMA" ? 2.0 / (length + 1) : 1.0 / length
+        prev = curMA
+        for k = 1 to n
+            prev := alpha * array.get(proj, k - 1) + (1.0 - alpha) * prev
+            array.push(out, prev)
+    else if maType == "WMA"
+        den = length * (length + 1) / 2.0
+        for k = 1 to n
+            num = 0.0
+            for i = 0 to length - 1
+                num += (length - i) * pathVal(source, proj, k - i)
+            array.push(out, num / den)
+    else
+        sum = curMA * length
+        for k = 1 to n
+            sum := sum + array.get(proj, k - 1) - pathVal(source, proj, k - length)
+            array.push(out, sum / length)
+    out
+
+// 次の足の移動平均は「次の足の価格」に対して 1 次式になる。
+// 価格 0 と 1 の 2 点から傾きと切片を求め、移動平均が横ばいになる価格を逆算する。
+breakEven(source, length, curMA) =>
+    probe = array.new<float>(1, 0.0)
+    f0 = array.get(fcMA(source, length, 1, probe, curMA), 0)
+    array.set(probe, 0, 1.0)
+    f1 = array.get(fcMA(source, length, 1, probe, curMA), 0)
+    f1 == f0 ? na : (curMA - f0) / (f1 - f0)
+
+// ── 計算と描画（最新足のみ）──────────────────────────────────────────────────
+var polyline plPath = na
+var polyline plMA1  = na
+var polyline plMA2  = na
+var label    lbEnd1 = na
+var label    lbEnd2 = na
+var label    lbCross = na
+var line     lnBE   = na
+var label    lbBE   = na
+
+var table tbl = table.new(position.top_right, 2, 7, border_width = 1,
+     frame_color = color.new(color.gray, 50), frame_width = 1)
+
+gcSoon = false
+dcSoon = false
+crossK = 0
+
+if barstate.islast
+    polyline.delete(plPath)
+    polyline.delete(plMA1)
+    polyline.delete(plMA2)
+    label.delete(lbEnd1)
+    label.delete(lbEnd2)
+    label.delete(lbCross)
+    line.delete(lnBE)
+    label.delete(lbBE)
+
+    proj = buildPath(src, fcLen)
+    f1   = fcMA(src, len1, fcLen, proj, cur1)
+    f2   = fcMA(src, len2, fcLen, proj, cur2)
+
+    // --- 予測ライン ---
+    pts1 = array.from(chart.point.from_index(bar_index, cur1))
+    pts2 = array.from(chart.point.from_index(bar_index, cur2))
+    ptsP = array.from(chart.point.from_index(bar_index, src))
+    for k = 1 to fcLen
+        array.push(pts1, chart.point.from_index(bar_index + k, array.get(f1, k - 1)))
+        array.push(ptsP, chart.point.from_index(bar_index + k, array.get(proj, k - 1)))
+        if useMA2
+            array.push(pts2, chart.point.from_index(bar_index + k, array.get(f2, k - 1)))
+
+    if drawPath
+        plPath := polyline.new(ptsP, line_color = colPath, line_style = line.style_dotted)
+    plMA1 := polyline.new(pts1, line_color = col1, line_width = 2, line_style = line.style_dashed)
+    if useMA2
+        plMA2 := polyline.new(pts2, line_color = col2, line_width = 2, line_style = line.style_dashed)
+
+    end1 = array.get(f1, fcLen - 1)
+    lbEnd1 := label.new(bar_index + fcLen, end1,
+         str.tostring(len1) + maType + " " + str.tostring(end1, format.mintick),
+         style = label.style_label_left, color = color.new(col1, 15),
+         textcolor = color.white, size = size.small)
+    if useMA2
+        end2 = array.get(f2, fcLen - 1)
+        lbEnd2 := label.new(bar_index + fcLen, end2,
+             str.tostring(len2) + maType + " " + str.tostring(end2, format.mintick),
+             style = label.style_label_left, color = color.new(col2, 15),
+             textcolor = color.white, size = size.small)
+
+    // --- クロス予測 ---
+    if useMA2
+        prevD = cur1 - cur2
+        for k = 0 to fcLen - 1
+            d = array.get(f1, k) - array.get(f2, k)
+            if crossK == 0 and prevD * d < 0
+                crossK := k + 1
+                gcSoon := d > 0
+                dcSoon := d < 0
+            prevD := d
+        if crossK > 0
+            cx = bar_index + crossK
+            cy = array.get(f1, crossK - 1)
+            lbCross := label.new(cx, cy,
+                 (gcSoon ? "GC" : "DC") + " 予測\n" + str.tostring(crossK) + "本後",
+                 style = gcSoon ? label.style_label_up : label.style_label_down,
+                 color = gcSoon ? colGC : colDC, textcolor = color.white, size = size.small)
+
+    // --- 次足の分岐点価格 ---
+    be = breakEven(src, len1, cur1)
+    if showBE and not na(be)
+        lnBE := line.new(bar_index, be, bar_index + fcLen, be,
+             color = color.new(col1, 40), style = line.style_dotted)
+        lbBE := label.new(bar_index + 1, be,
+             "分岐 " + str.tostring(be, format.mintick),
+             style = label.style_label_left, color = color.new(color.black, 30),
+             textcolor = color.white, size = size.tiny)
+
+    // --- 情報パネル ---
+    if showTbl
+        // SMA の場合、n 本先の窓のうち既に確定している割合
+        fixed = maType == "SMA" ? math.max(0.0, (len1 - fcLen) / (len1 * 1.0)) * 100.0 : na
+        dir1  = end1 > cur1 ? "↑ 上向き" : end1 < cur1 ? "↓ 下向き" : "→ 横ばい"
+        hdr   = color.new(color.gray, 80)
+        table.cell(tbl, 0, 0, "MA Forecast", bgcolor = hdr, text_color = color.gray, text_size = size.small)
+        table.cell(tbl, 1, 0, maType + " / " + mode, bgcolor = hdr, text_color = color.gray, text_size = size.small)
+        table.cell(tbl, 0, 1, str.tostring(len1) + "本 現在", text_size = size.small)
+        table.cell(tbl, 1, 1, str.tostring(cur1, format.mintick), text_size = size.small)
+        table.cell(tbl, 0, 2, str.tostring(fcLen) + "本後", text_size = size.small)
+        table.cell(tbl, 1, 2, str.tostring(end1, format.mintick) + "  " + dir1,
+             text_size = size.small, text_color = end1 > cur1 ? colGC : end1 < cur1 ? colDC : color.gray)
+        table.cell(tbl, 0, 3, "次足の分岐点", text_size = size.small)
+        table.cell(tbl, 1, 3, na(be) ? "—" : str.tostring(be, format.mintick), text_size = size.small)
+        table.cell(tbl, 0, 4, "窓の確定率", text_size = size.small)
+        table.cell(tbl, 1, 4, na(fixed) ? "—" : str.tostring(fixed, "#") + "%", text_size = size.small)
+        table.cell(tbl, 0, 5, "クロス予測", text_size = size.small)
+        table.cell(tbl, 1, 5, not useMA2 ? "—" : crossK == 0 ? str.tostring(fcLen) + "本以内になし" :
+             (gcSoon ? "GC " : "DC ") + str.tostring(crossK) + "本後", text_size = size.small,
+             text_color = crossK == 0 ? color.gray : gcSoon ? colGC : colDC)
+        table.cell(tbl, 0, 6, "想定価格", text_size = size.small)
+        table.cell(tbl, 1, 6, str.tostring(array.get(proj, fcLen - 1), format.mintick), text_size = size.small)
+
+// ── アラート ────────────────────────────────────────────────────────────────
+alertcondition(gcSoon, "GC接近", "予測期間内にゴールデンクロスの見込み")
+alertcondition(dcSoon, "DC接近", "予測期間内にデッドクロスの見込み")
+alertcondition(gcSoon and crossK <= 3, "GC 3本以内", "3本以内にゴールデンクロスの見込み")
+alertcondition(dcSoon and crossK <= 3, "DC 3本以内", "3本以内にデッドクロスの見込み")
