@@ -8,8 +8,15 @@
 //    - リボン（MA間の塗りつぶし）
 //    - 傾きによる色替え（上向き/下向き）
 //    - バンド（ボリンジャー / パーセントエンベロープ）
-//    - 情報テーブル（値・乖離率・傾きを期間順に一覧）
+//    - 情報テーブル（値・乖離率・傾き・上位足トレンド・ATR・VWAP乖離）
 //    - 価格と指定MAのクロスアラート
+//
+//  短期足（スキャル）向けの装備
+//    - 上位足トレンド判定と、それに逆らうシグナルの非表示
+//    - VWAP（±σバンド）
+//    - 前日終値 / 当日始値 / 寄り付きレンジと、そのブレイク
+//    - 押し目・戻りタッチの検出
+//    - 時間帯フィルターとシグナルの間引き（最短間隔）
 //
 //  TradingView の Pine エディタに貼り付けて「チャートに追加」で使えます。
 // =============================================================================
@@ -260,6 +267,120 @@ if poLblOn and poDnStart
     label.new(bar_index, high, "PO↓", style = label.style_label_down, color = color.new(#ef5350, 20), textcolor = color.white, size = size.small)
 
 // -----------------------------------------------------------------------------
+//  上位足トレンド（スキャル用の大まかな方向確認）
+//  短期足で売買しつつ、上位足の向きに逆らったシグナルを消すためのフィルターです。
+// -----------------------------------------------------------------------------
+G_HTF = "上位足トレンド"
+htfOn   = input.bool(true, "上位足のトレンドを判定", group = G_HTF)
+htfTf   = input.timeframe("60", "上位足", group = G_HTF, tooltip = "1分足なら15〜60分、5分足なら60分〜日足あたりが目安です。")
+htfTy   = input.string("EMA", "種別", inline = "htf", group = G_HTF, options = ["SMA", "EMA", "WMA", "SMMA(RMA)", "VWMA", "HMA", "DEMA", "TEMA"])
+htfLen  = input.int(20, "期間", inline = "htf", minval = 1, group = G_HTF)
+htfFilt = input.bool(true, "上位足に逆らうシグナルを消す", group = G_HTF, tooltip = "上位足が上昇のときはゴールデンクロスと押し目だけ、下降のときはデッドクロスと戻りだけを表示します。")
+
+f_htf() =>
+    m = f_ma(htfTy, srcAll, htfLen)
+    [m, m[1], close]
+
+[htfMA, htfMAp, htfCl] = request.security(syminfo.tickerid, htfTf == "" ? timeframe.period : htfTf, f_htf(), lookahead = barmerge.lookahead_off)
+
+htfUp = htfOn and htfCl > htfMA and htfMA > htfMAp
+htfDn = htfOn and htfCl < htfMA and htfMA < htfMAp
+
+// フィルターOFFのときは常に通す
+trendOkUp = not (htfOn and htfFilt) or htfUp
+trendOkDn = not (htfOn and htfFilt) or htfDn
+
+// -----------------------------------------------------------------------------
+//  時間帯フィルター / シグナルの間引き
+// -----------------------------------------------------------------------------
+G_TIME = "時間帯・間引き"
+sessOn  = input.bool(false, "シグナルを時間帯で絞る", group = G_TIME)
+sessStr = input.session("0900-1130,1230-1500", "有効時間", group = G_TIME, tooltip = "取引所のタイムゾーンで判定します。日本株の場合は前場・後場の指定です。")
+cdBars  = input.int(0, "シグナルの最短間隔（バー数）", minval = 0, group = G_TIME, tooltip = "0で制限なし。1分足などでシグナルが出すぎる場合に、直前のシグナルからこのバー数が経つまで次を出しません。")
+
+inSess = not sessOn or not na(time(timeframe.period, sessStr))
+
+// 呼び出し場所ごとに別々の状態を持つので、シグナルの種類ごとに独立して効きます
+f_cool(bool _sig, simple int _n) =>
+    var int last = -1000000
+    ok = _sig and (_n <= 0 or bar_index - last >= _n)
+    if ok
+        last := bar_index
+    ok
+
+// -----------------------------------------------------------------------------
+//  VWAP（日中の基準線）
+//  出来高で加重した当日の平均取得単価。スキャルの押し目・戻りの基準に使います。
+//  出来高のない銘柄では表示されません（エラーにはなりません）。
+// -----------------------------------------------------------------------------
+G_VW = "VWAP"
+vwOn    = input.bool(true, "VWAPを表示", group = G_VW)
+vwBand  = input.bool(false, "±σバンドも表示", group = G_VW)
+vwMult  = input.float(1.0, "σ倍率", step = 0.1, minval = 0.1, group = G_VW)
+vwCol   = input.color(#ffb300, "色", group = G_VW)
+
+newDay = timeframe.change("D")
+vwSrc  = hlc3
+vwVol  = nz(volume)
+
+var float cumPV = 0.0
+var float cumV  = 0.0
+var float cumP2 = 0.0
+
+if newDay or bar_index == 0
+    cumPV := vwSrc * vwVol
+    cumV  := vwVol
+    cumP2 := vwSrc * vwSrc * vwVol
+else
+    cumPV += vwSrc * vwVol
+    cumV  += vwVol
+    cumP2 += vwSrc * vwSrc * vwVol
+
+vwapV  = cumV > 0 ? cumPV / cumV : na
+vwapSd = cumV > 0 ? math.sqrt(math.max(cumP2 / cumV - vwapV * vwapV, 0.0)) : na
+showVW = vwOn and timeframe.isintraday
+
+plot(showVW ? vwapV : na, "VWAP", color = vwCol, linewidth = 2)
+vwU = plot(showVW and vwBand ? vwapV + vwapSd * vwMult : na, "VWAP+σ", color = color.new(vwCol, 55))
+vwL = plot(showVW and vwBand ? vwapV - vwapSd * vwMult : na, "VWAP-σ", color = color.new(vwCol, 55))
+fill(vwU, vwL, color = showVW and vwBand ? color.new(vwCol, 93) : na, title = "VWAPバンド塗り")
+
+// -----------------------------------------------------------------------------
+//  当日ライン（前日終値 / 当日始値 / 寄り付きレンジ）
+//  短期足で意識されやすい水平線です。日足以上のチャートでは表示されません。
+// -----------------------------------------------------------------------------
+G_DAY = "当日ライン"
+dayOn  = input.bool(true, "前日終値・当日始値", group = G_DAY)
+orbOn  = input.bool(true, "寄り付きレンジ", inline = "orb", group = G_DAY)
+orbMin = input.int(30, "分", inline = "orb", minval = 1, group = G_DAY, tooltip = "寄り付きからこの分数の高値・安値を引きます。ブレイクの基準に使います。")
+
+// 日足の始値と前日終値は、その日が始まった時点で確定しているので lookahead_on で問題ありません
+[dOpen, dPrevCl] = request.security(syminfo.tickerid, "D", [open, close[1]], lookahead = barmerge.lookahead_on)
+
+var float orbH = na
+var float orbL = na
+var int   orbT = na
+
+if newDay
+    orbT := time
+    orbH := high
+    orbL := low
+else if not na(orbT) and time < orbT + orbMin * 60000
+    orbH := math.max(nz(orbH, high), high)
+    orbL := math.min(nz(orbL, low), low)
+
+showDay = dayOn and timeframe.isintraday
+showOrb = orbOn and timeframe.isintraday
+
+plot(showDay ? dPrevCl : na, "前日終値", color = color.new(#787b86, 0),  style = plot.style_linebr)
+plot(showDay ? dOpen   : na, "当日始値", color = color.new(#787b86, 45), style = plot.style_linebr)
+plot(showOrb ? orbH    : na, "寄りレンジ高", color = color.new(#26a69a, 35), style = plot.style_linebr)
+plot(showOrb ? orbL    : na, "寄りレンジ安", color = color.new(#ef5350, 35), style = plot.style_linebr)
+
+orbUp = f_cool(showOrb and not na(orbH) and ta.crossover(close, orbH) and inSess, cdBars)
+orbDn = f_cool(showOrb and not na(orbL) and ta.crossunder(close, orbL) and inSess, cdBars)
+
+// -----------------------------------------------------------------------------
 //  クロス（任意の2本 / 価格とMA）
 // -----------------------------------------------------------------------------
 G_CR = "クロス"
@@ -269,19 +390,34 @@ crSlow  = input.int(2, "遅いMA（スロット番号）", minval = 1, maxval = 
 pxOn    = input.bool(false, "価格とMAのクロスを表示", group = G_CR)
 pxSlot  = input.int(2, "対象MA（スロット番号）", minval = 1, maxval = 10, group = G_CR)
 
+pbOn   = input.bool(false, "押し目・戻りのタッチを表示", group = G_CR, tooltip = "上位足が上昇のとき、価格が対象MAまで下げてきて反発した足で印を出します（下降トレンドでは戻り）。")
+pbSlot = input.int(2, "押し目の対象MA（スロット番号）", minval = 1, maxval = 10, group = G_CR)
+
 fastV = array.get(allMA, crFast - 1)
 slowV = array.get(allMA, crSlow - 1)
-gc    = crOn and crFast != crSlow and ta.crossover(fastV, slowV)
-dc    = crOn and crFast != crSlow and ta.crossunder(fastV, slowV)
+gcRaw = crOn and crFast != crSlow and ta.crossover(fastV, slowV)
+dcRaw = crOn and crFast != crSlow and ta.crossunder(fastV, slowV)
+gc    = f_cool(gcRaw and inSess and trendOkUp, cdBars)
+dc    = f_cool(dcRaw and inSess and trendOkDn, cdBars)
 
 pxV   = array.get(allMA, pxSlot - 1)
-pxUp  = pxOn and ta.crossover(close, pxV)
-pxDn  = pxOn and ta.crossunder(close, pxV)
+pxUp  = f_cool(pxOn and ta.crossover(close, pxV) and inSess and trendOkUp, cdBars)
+pxDn  = f_cool(pxOn and ta.crossunder(close, pxV) and inSess and trendOkDn, cdBars)
+
+// 押し目・戻り：ヒゲが対象MAに触れて、終値がMAの向こう側に残った足
+pbV    = array.get(allMA, pbSlot - 1)
+pbTouch = not na(pbV) and low <= pbV and high >= pbV
+pbUp   = f_cool(pbOn and pbTouch and close > pbV and inSess and (htfOn ? htfUp : true), cdBars)
+pbDn   = f_cool(pbOn and pbTouch and close < pbV and inSess and (htfOn ? htfDn : true), cdBars)
 
 plotshape(gc,   "ゴールデンクロス", shape.triangleup,   location.belowbar, color.new(#26a69a, 0), size = size.tiny)
 plotshape(dc,   "デッドクロス",     shape.triangledown, location.abovebar, color.new(#ef5350, 0), size = size.tiny)
 plotshape(pxUp, "価格がMAを上抜け", shape.circle,       location.belowbar, color.new(#2962ff, 0), size = size.tiny)
 plotshape(pxDn, "価格がMAを下抜け", shape.circle,       location.abovebar, color.new(#ff9800, 0), size = size.tiny)
+plotshape(pbUp, "押し目タッチ",     shape.diamond,      location.belowbar, color.new(#26a69a, 0), size = size.tiny)
+plotshape(pbDn, "戻りタッチ",       shape.diamond,      location.abovebar, color.new(#ef5350, 0), size = size.tiny)
+plotshape(orbUp, "寄りレンジ上抜け", shape.labelup,     location.belowbar, color.new(#26a69a, 20), size = size.tiny)
+plotshape(orbDn, "寄りレンジ下抜け", shape.labeldown,   location.abovebar, color.new(#ef5350, 20), size = size.tiny)
 
 // -----------------------------------------------------------------------------
 //  バンド（ボリンジャー / パーセントエンベロープ）
@@ -314,10 +450,13 @@ tbSz  = input.string("小", "文字サイズ", options = ["極小", "小", "中"
 tbPosV = tbPos == "右上" ? position.top_right : tbPos == "右下" ? position.bottom_right : tbPos == "左上" ? position.top_left : position.bottom_left
 tbSzV  = tbSz  == "極小" ? size.tiny : tbSz == "小" ? size.small : size.normal
 
-var table tb = table.new(tbPosV, 5, 12, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 60), border_color = color.new(color.gray, 60))
+// ta.* は毎バー実行する必要があるため、テーブル描画の外で計算しておく
+atrV = ta.atr(14)
+
+var table tb = table.new(tbPosV, 5, 14, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 60), border_color = color.new(color.gray, 60))
 
 if tbOn and barstate.islast
-    table.clear(tb, 0, 0, 4, 11)
+    table.clear(tb, 0, 0, 4, 13)
     hdBg = color.new(color.gray, 80)
     table.cell(tb, 0, 0, "MA",     bgcolor = hdBg, text_color = color.gray, text_size = tbSzV)
     table.cell(tb, 1, 0, "設定",   bgcolor = hdBg, text_color = color.gray, text_size = tbSzV)
@@ -345,6 +484,21 @@ if tbOn and barstate.islast
     table.cell(tb, 0, nMA + 1, "状態", text_color = color.gray, text_size = tbSzV)
     table.cell(tb, 1, nMA + 1, poTxt, text_color = poCol, text_size = tbSzV)
 
+    // 上位足トレンド
+    htfTxt = not htfOn ? "OFF" : htfUp ? "上昇" : htfDn ? "下降" : "中立"
+    htfC   = htfUp ? slopeUp : htfDn ? slopeDn : color.gray
+    table.cell(tb, 0, nMA + 2, "上位足", text_color = color.gray, text_size = tbSzV)
+    table.cell(tb, 1, nMA + 2, (htfTf == "" ? timeframe.period : htfTf) + " " + htfTy + str.tostring(htfLen), text_color = color.gray, text_size = tbSzV)
+    table.cell(tb, 2, nMA + 2, htfTxt, text_color = htfC, text_size = tbSzV)
+
+    // ボラティリティ（損切り幅の目安）と VWAP からの乖離
+    table.cell(tb, 0, nMA + 3, "ATR14", text_color = color.gray, text_size = tbSzV)
+    table.cell(tb, 1, nMA + 3, str.tostring(atrV, format.mintick) + " (" + str.tostring(atrV / close * 100, "#.##") + "%)", text_color = color.gray, text_size = tbSzV)
+    if showVW and not na(vwapV)
+        vwDev = (close - vwapV) / vwapV * 100.0
+        table.cell(tb, 2, nMA + 3, "VWAP", text_color = vwCol, text_size = tbSzV)
+        table.cell(tb, 3, nMA + 3, str.tostring(vwDev, "#.##") + "%", text_color = vwDev >= 0 ? slopeUp : slopeDn, text_size = tbSzV)
+
 // -----------------------------------------------------------------------------
 //  アラート
 //  チャート右上のアラート作成画面で、条件として選べます。
@@ -356,3 +510,11 @@ alertcondition(poDnStart, "パーフェクトオーダー成立（下降）", "M
 alertcondition(poEnd,     "パーフェクトオーダー崩れ", "MA10: パーフェクトオーダーが崩れました")
 alertcondition(pxUp,      "価格がMAを上抜け",         "MA10: 価格が指定MAを上抜けしました")
 alertcondition(pxDn,      "価格がMAを下抜け",         "MA10: 価格が指定MAを下抜けしました")
+alertcondition(pbUp,      "押し目タッチ",             "MA10: 上位足が上昇のまま、価格が指定MAまで押しました")
+alertcondition(pbDn,      "戻りタッチ",               "MA10: 上位足が下降のまま、価格が指定MAまで戻しました")
+alertcondition(orbUp,     "寄りレンジ上抜け",         "MA10: 寄り付きレンジの高値を上抜けしました")
+alertcondition(orbDn,     "寄りレンジ下抜け",         "MA10: 寄り付きレンジの安値を下抜けしました")
+alertcondition(htfUp and not htfUp[1], "上位足が上昇に転換", "MA10: 上位足のトレンドが上昇に変わりました")
+alertcondition(htfDn and not htfDn[1], "上位足が下降に転換", "MA10: 上位足のトレンドが下降に変わりました")
+alertcondition(showVW and ta.crossover(close, vwapV),  "VWAPを上抜け", "MA10: 価格がVWAPを上抜けしました")
+alertcondition(showVW and ta.crossunder(close, vwapV), "VWAPを下抜け", "MA10: 価格がVWAPを下抜けしました")
