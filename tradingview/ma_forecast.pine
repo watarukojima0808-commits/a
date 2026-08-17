@@ -66,11 +66,30 @@ plot(drawMA and useMA2 ? cur2 : na, "長期MA", color = col2, linewidth = 2)
 // 直近の傾き（1本あたりの価格変化）
 slope = ta.linreg(src, slopeLen, 0) - ta.linreg(src, slopeLen, 1)
 
+// ── 過去の価格を配列に貯める ────────────────────────────────────────────────
+//  関数の中から source[i] で過去を遡ると、その関数が最新足でしか呼ばれない場合
+//  「関数が実行された足の履歴」しか見えず na が返る（Pineの仕様）。
+//  予測は最新足でしか回さないので、必要な過去の価格は毎足ここで貯めておく。
+var float[] hist = array.new<float>()
+var int lastBar = na
+if na(lastBar) or bar_index != lastBar
+    array.push(hist, src)
+    lastBar := bar_index
+else
+    // 同じ足の更新（リアルタイム足のティック）では追加せず上書きする
+    array.set(hist, array.size(hist) - 1, src)
+while array.size(hist) > math.max(len1, len2)
+    array.shift(hist)
+
+// back = 0 が現在足、1 が1本前
+pastAt(back) =>
+    idx = array.size(hist) - 1 - back
+    idx >= 0 ? array.get(hist, idx) : array.get(hist, 0)
+
 // ── 価格パス上の 1 点を返す ──────────────────────────────────────────────────
 //   j <= 0 : 過去（j=0 が現在足）、j >= 1 : 予測 j 本目
-pathVal(source, proj, j) =>
-    back = j <= 0 ? -j : 0
-    j <= 0 ? source[back] : array.get(proj, math.max(j - 1, 0))
+pathVal(proj, j) =>
+    j <= 0 ? pastAt(-j) : array.get(proj, math.max(j - 1, 0))
 
 // ── 将来の価格パスを作る ────────────────────────────────────────────────────
 buildPath(base, n) =>
@@ -89,7 +108,7 @@ buildPath(base, n) =>
 //   SMA  : 合計から「窓を出る価格」を引き「入る価格」を足していくだけ
 //   EMA/RMA : 漸化式をそのまま回す
 //   WMA  : 毎ステップ窓を張り直して加重平均
-fcMA(source, length, n, proj, curMA) =>
+fcMA(length, n, proj, curMA) =>
     out = array.new<float>()
     if maType == "EMA" or maType == "RMA"
         alpha = maType == "EMA" ? 2.0 / (length + 1) : 1.0 / length
@@ -102,22 +121,22 @@ fcMA(source, length, n, proj, curMA) =>
         for k = 1 to n
             num = 0.0
             for i = 0 to length - 1
-                num += (length - i) * pathVal(source, proj, k - i)
+                num += (length - i) * pathVal(proj, k - i)
             array.push(out, num / den)
     else
         sum = curMA * length
         for k = 1 to n
-            sum := sum + array.get(proj, k - 1) - pathVal(source, proj, k - length)
+            sum := sum + array.get(proj, k - 1) - pathVal(proj, k - length)
             array.push(out, sum / length)
     out
 
 // 次の足の移動平均は「次の足の価格」に対して 1 次式になる。
 // 価格 0 と 1 の 2 点から傾きと切片を求め、移動平均が横ばいになる価格を逆算する。
-breakEven(source, length, curMA) =>
+breakEven(length, curMA) =>
     probe = array.new<float>(1, 0.0)
-    f0 = array.get(fcMA(source, length, 1, probe, curMA), 0)
+    f0 = array.get(fcMA(length, 1, probe, curMA), 0)
     array.set(probe, 0, 1.0)
-    f1 = array.get(fcMA(source, length, 1, probe, curMA), 0)
+    f1 = array.get(fcMA(length, 1, probe, curMA), 0)
     f1 == f0 ? na : (curMA - f0) / (f1 - f0)
 
 // ── 計算と描画（最新足のみ）──────────────────────────────────────────────────
@@ -159,8 +178,8 @@ if barstate.islast
         label.delete(array.pop(fcLabels))
 
     proj = buildPath(src, fcLen)
-    f1   = fcMA(src, len1, fcLen, proj, cur1)
-    f2   = fcMA(src, len2, fcLen, proj, cur2)
+    f1   = fcMA(len1, fcLen, proj, cur1)
+    f2   = fcMA(len2, fcLen, proj, cur2)
 
     // --- 予測ライン ---
     if drawPath
@@ -200,7 +219,7 @@ if barstate.islast
                  color = gcSoon ? colGC : colDC, textcolor = color.white, size = size.small))
 
     // --- 次足の分岐点価格 ---
-    be = breakEven(src, len1, cur1)
+    be = breakEven(len1, cur1)
     if showBE and not na(be)
         seg(bar_index, be, bar_index + fcLen, be, color.new(col1, 40), line.style_dotted, 1)
         array.push(fcLabels, label.new(bar_index + fcLen, be,
