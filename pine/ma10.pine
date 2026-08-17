@@ -1,0 +1,358 @@
+// =============================================================================
+//  MA10 — 移動平均を最大10本まで表示できるインジケーター
+//
+//  スロット1〜10それぞれで「種別 / 期間 / 時間足 / ずらし / 色 / 太さ」を個別に設定できます。
+//  あわせて以下も装備しています。
+//    - パーフェクトオーダー判定（背景色 + ラベル + アラート）
+//    - 任意の2本のゴールデンクロス / デッドクロス（矢印 + アラート）
+//    - リボン（MA間の塗りつぶし）
+//    - 傾きによる色替え（上向き/下向き）
+//    - バンド（ボリンジャー / パーセントエンベロープ）
+//    - 情報テーブル（値・乖離率・傾きを期間順に一覧）
+//    - 価格と指定MAのクロスアラート
+//
+//  TradingView の Pine エディタに貼り付けて「チャートに追加」で使えます。
+// =============================================================================
+//@version=6
+indicator("MA10 — 移動平均10本", shorttitle = "MA10", overlay = true, max_labels_count = 500)
+
+// -----------------------------------------------------------------------------
+//  移動平均の計算
+//  種別はインプット（全バーで同じ分岐）なので、switch を使っても履歴はズレません。
+// -----------------------------------------------------------------------------
+f_ma(simple string _type, float _src, simple int _len) =>
+    switch _type
+        "SMA"       => ta.sma(_src, _len)
+        "EMA"       => ta.ema(_src, _len)
+        "WMA"       => ta.wma(_src, _len)
+        "SMMA(RMA)" => ta.rma(_src, _len)
+        "VWMA"      => ta.vwma(_src, _len)
+        "HMA"       => ta.hma(_src, _len)
+        "DEMA"      => 2.0 * ta.ema(_src, _len) - ta.ema(ta.ema(_src, _len), _len)
+        "TEMA"      => 3.0 * (ta.ema(_src, _len) - ta.ema(ta.ema(_src, _len), _len)) + ta.ema(ta.ema(ta.ema(_src, _len), _len), _len)
+        =>             ta.sma(_src, _len)
+
+// -----------------------------------------------------------------------------
+//  共通設定
+// -----------------------------------------------------------------------------
+G_COM = "共通設定"
+
+srcAll  = input.source(close, "ソース（全MA共通）", group = G_COM)
+slopeOn = input.bool(false, "傾きで色を変える", group = G_COM, tooltip = "ONにすると各MAの色設定を無視し、前バーより上向きか下向きかで色分けします。")
+slopeUp = input.color(#26a69a, "上向き", inline = "slope", group = G_COM)
+slopeDn = input.color(#ef5350, "下向き", inline = "slope", group = G_COM)
+
+// -----------------------------------------------------------------------------
+//  MA 1〜10
+//  a行: 表示 / 種別 / 期間     b行: 色 / 太さ / 時間足 / ずらし
+// -----------------------------------------------------------------------------
+on1  = input.bool(true,   "MA1",  inline = "1a", group = "MA 1")
+ty1  = input.string("SMA", "",    inline = "1a", group = "MA 1", options = ["SMA", "EMA", "WMA", "SMMA(RMA)", "VWMA", "HMA", "DEMA", "TEMA"])
+ln1  = input.int(5,        "",    inline = "1a", group = "MA 1", minval = 1)
+co1  = input.color(#f23645, "",   inline = "1b", group = "MA 1")
+wd1  = input.int(1,        "",    inline = "1b", group = "MA 1", minval = 1, maxval = 4)
+tf1  = input.timeframe("",  "",   inline = "1b", group = "MA 1")
+of1  = input.int(0,        "",    inline = "1b", group = "MA 1")
+
+on2  = input.bool(true,   "MA2",  inline = "2a", group = "MA 2")
+ty2  = input.string("SMA", "",    inline = "2a", group = "MA 2", options = ["SMA", "EMA", "WMA", "SMMA(RMA)", "VWMA", "HMA", "DEMA", "TEMA"])
+ln2  = input.int(25,       "",    inline = "2a", group = "MA 2", minval = 1)
+co2  = input.color(#ff9800, "",   inline = "2b", group = "MA 2")
+wd2  = input.int(1,        "",    inline = "2b", group = "MA 2", minval = 1, maxval = 4)
+tf2  = input.timeframe("",  "",   inline = "2b", group = "MA 2")
+of2  = input.int(0,        "",    inline = "2b", group = "MA 2")
+
+on3  = input.bool(true,   "MA3",  inline = "3a", group = "MA 3")
+ty3  = input.string("SMA", "",    inline = "3a", group = "MA 3", options = ["SMA", "EMA", "WMA", "SMMA(RMA)", "VWMA", "HMA", "DEMA", "TEMA"])
+ln3  = input.int(75,       "",    inline = "3a", group = "MA 3", minval = 1)
+co3  = input.color(#2962ff, "",   inline = "3b", group = "MA 3")
+wd3  = input.int(1,        "",    inline = "3b", group = "MA 3", minval = 1, maxval = 4)
+tf3  = input.timeframe("",  "",   inline = "3b", group = "MA 3")
+of3  = input.int(0,        "",    inline = "3b", group = "MA 3")
+
+on4  = input.bool(true,   "MA4",  inline = "4a", group = "MA 4")
+ty4  = input.string("SMA", "",    inline = "4a", group = "MA 4", options = ["SMA", "EMA", "WMA", "SMMA(RMA)", "VWMA", "HMA", "DEMA", "TEMA"])
+ln4  = input.int(200,      "",    inline = "4a", group = "MA 4", minval = 1)
+co4  = input.color(#787b86, "",   inline = "4b", group = "MA 4")
+wd4  = input.int(2,        "",    inline = "4b", group = "MA 4", minval = 1, maxval = 4)
+tf4  = input.timeframe("",  "",   inline = "4b", group = "MA 4")
+of4  = input.int(0,        "",    inline = "4b", group = "MA 4")
+
+on5  = input.bool(false,  "MA5",  inline = "5a", group = "MA 5")
+ty5  = input.string("EMA", "",    inline = "5a", group = "MA 5", options = ["SMA", "EMA", "WMA", "SMMA(RMA)", "VWMA", "HMA", "DEMA", "TEMA"])
+ln5  = input.int(10,       "",    inline = "5a", group = "MA 5", minval = 1)
+co5  = input.color(#e91e63, "",   inline = "5b", group = "MA 5")
+wd5  = input.int(1,        "",    inline = "5b", group = "MA 5", minval = 1, maxval = 4)
+tf5  = input.timeframe("",  "",   inline = "5b", group = "MA 5")
+of5  = input.int(0,        "",    inline = "5b", group = "MA 5")
+
+on6  = input.bool(false,  "MA6",  inline = "6a", group = "MA 6")
+ty6  = input.string("EMA", "",    inline = "6a", group = "MA 6", options = ["SMA", "EMA", "WMA", "SMMA(RMA)", "VWMA", "HMA", "DEMA", "TEMA"])
+ln6  = input.int(20,       "",    inline = "6a", group = "MA 6", minval = 1)
+co6  = input.color(#9c27b0, "",   inline = "6b", group = "MA 6")
+wd6  = input.int(1,        "",    inline = "6b", group = "MA 6", minval = 1, maxval = 4)
+tf6  = input.timeframe("",  "",   inline = "6b", group = "MA 6")
+of6  = input.int(0,        "",    inline = "6b", group = "MA 6")
+
+on7  = input.bool(false,  "MA7",  inline = "7a", group = "MA 7")
+ty7  = input.string("SMA", "",    inline = "7a", group = "MA 7", options = ["SMA", "EMA", "WMA", "SMMA(RMA)", "VWMA", "HMA", "DEMA", "TEMA"])
+ln7  = input.int(50,       "",    inline = "7a", group = "MA 7", minval = 1)
+co7  = input.color(#00bcd4, "",   inline = "7b", group = "MA 7")
+wd7  = input.int(1,        "",    inline = "7b", group = "MA 7", minval = 1, maxval = 4)
+tf7  = input.timeframe("",  "",   inline = "7b", group = "MA 7")
+of7  = input.int(0,        "",    inline = "7b", group = "MA 7")
+
+on8  = input.bool(false,  "MA8",  inline = "8a", group = "MA 8")
+ty8  = input.string("SMA", "",    inline = "8a", group = "MA 8", options = ["SMA", "EMA", "WMA", "SMMA(RMA)", "VWMA", "HMA", "DEMA", "TEMA"])
+ln8  = input.int(100,      "",    inline = "8a", group = "MA 8", minval = 1)
+co8  = input.color(#4caf50, "",   inline = "8b", group = "MA 8")
+wd8  = input.int(1,        "",    inline = "8b", group = "MA 8", minval = 1, maxval = 4)
+tf8  = input.timeframe("",  "",   inline = "8b", group = "MA 8")
+of8  = input.int(0,        "",    inline = "8b", group = "MA 8")
+
+on9  = input.bool(false,  "MA9",  inline = "9a", group = "MA 9")
+ty9  = input.string("SMA", "",    inline = "9a", group = "MA 9", options = ["SMA", "EMA", "WMA", "SMMA(RMA)", "VWMA", "HMA", "DEMA", "TEMA"])
+ln9  = input.int(150,      "",    inline = "9a", group = "MA 9", minval = 1)
+co9  = input.color(#795548, "",   inline = "9b", group = "MA 9")
+wd9  = input.int(1,        "",    inline = "9b", group = "MA 9", minval = 1, maxval = 4)
+tf9  = input.timeframe("",  "",   inline = "9b", group = "MA 9")
+of9  = input.int(0,        "",    inline = "9b", group = "MA 9")
+
+on10 = input.bool(false,  "MA10", inline = "10a", group = "MA 10")
+ty10 = input.string("SMA", "",    inline = "10a", group = "MA 10", options = ["SMA", "EMA", "WMA", "SMMA(RMA)", "VWMA", "HMA", "DEMA", "TEMA"])
+ln10 = input.int(300,      "",    inline = "10a", group = "MA 10", minval = 1)
+co10 = input.color(#607d8b, "",   inline = "10b", group = "MA 10")
+wd10 = input.int(1,        "",    inline = "10b", group = "MA 10", minval = 1, maxval = 4)
+tf10 = input.timeframe("",  "",   inline = "10b", group = "MA 10")
+of10 = input.int(0,        "",    inline = "10b", group = "MA 10")
+
+// -----------------------------------------------------------------------------
+//  値の取得（時間足が空欄ならチャートの足、指定があればその足で計算）
+//  lookahead_off なので上位足の未確定値を先読みすることはありません。
+// -----------------------------------------------------------------------------
+ma1  = request.security(syminfo.tickerid, tf1  == "" ? timeframe.period : tf1,  f_ma(ty1,  srcAll, ln1),  lookahead = barmerge.lookahead_off)
+ma2  = request.security(syminfo.tickerid, tf2  == "" ? timeframe.period : tf2,  f_ma(ty2,  srcAll, ln2),  lookahead = barmerge.lookahead_off)
+ma3  = request.security(syminfo.tickerid, tf3  == "" ? timeframe.period : tf3,  f_ma(ty3,  srcAll, ln3),  lookahead = barmerge.lookahead_off)
+ma4  = request.security(syminfo.tickerid, tf4  == "" ? timeframe.period : tf4,  f_ma(ty4,  srcAll, ln4),  lookahead = barmerge.lookahead_off)
+ma5  = request.security(syminfo.tickerid, tf5  == "" ? timeframe.period : tf5,  f_ma(ty5,  srcAll, ln5),  lookahead = barmerge.lookahead_off)
+ma6  = request.security(syminfo.tickerid, tf6  == "" ? timeframe.period : tf6,  f_ma(ty6,  srcAll, ln6),  lookahead = barmerge.lookahead_off)
+ma7  = request.security(syminfo.tickerid, tf7  == "" ? timeframe.period : tf7,  f_ma(ty7,  srcAll, ln7),  lookahead = barmerge.lookahead_off)
+ma8  = request.security(syminfo.tickerid, tf8  == "" ? timeframe.period : tf8,  f_ma(ty8,  srcAll, ln8),  lookahead = barmerge.lookahead_off)
+ma9  = request.security(syminfo.tickerid, tf9  == "" ? timeframe.period : tf9,  f_ma(ty9,  srcAll, ln9),  lookahead = barmerge.lookahead_off)
+ma10 = request.security(syminfo.tickerid, tf10 == "" ? timeframe.period : tf10, f_ma(ty10, srcAll, ln10), lookahead = barmerge.lookahead_off)
+
+// 傾き色を適用した最終的な線色
+f_col(color _base, float _v) =>
+    slopeOn ? (_v > _v[1] ? slopeUp : _v < _v[1] ? slopeDn : _base) : _base
+
+// -----------------------------------------------------------------------------
+//  描画
+// -----------------------------------------------------------------------------
+p1  = plot(on1  ? ma1  : na, "MA1",  color = f_col(co1,  ma1),  linewidth = wd1,  offset = of1)
+p2  = plot(on2  ? ma2  : na, "MA2",  color = f_col(co2,  ma2),  linewidth = wd2,  offset = of2)
+p3  = plot(on3  ? ma3  : na, "MA3",  color = f_col(co3,  ma3),  linewidth = wd3,  offset = of3)
+p4  = plot(on4  ? ma4  : na, "MA4",  color = f_col(co4,  ma4),  linewidth = wd4,  offset = of4)
+p5  = plot(on5  ? ma5  : na, "MA5",  color = f_col(co5,  ma5),  linewidth = wd5,  offset = of5)
+p6  = plot(on6  ? ma6  : na, "MA6",  color = f_col(co6,  ma6),  linewidth = wd6,  offset = of6)
+p7  = plot(on7  ? ma7  : na, "MA7",  color = f_col(co7,  ma7),  linewidth = wd7,  offset = of7)
+p8  = plot(on8  ? ma8  : na, "MA8",  color = f_col(co8,  ma8),  linewidth = wd8,  offset = of8)
+p9  = plot(on9  ? ma9  : na, "MA9",  color = f_col(co9,  ma9),  linewidth = wd9,  offset = of9)
+p10 = plot(on10 ? ma10 : na, "MA10", color = f_col(co10, ma10), linewidth = wd10, offset = of10)
+
+// -----------------------------------------------------------------------------
+//  リボン（隣り合うスロット間の塗りつぶし）
+//  スロット番号順に塗るので、期間の短い順に並べておくときれいに出ます。
+// -----------------------------------------------------------------------------
+G_RIB = "リボン（MA間の塗りつぶし）"
+ribOn  = input.bool(false, "リボンを表示", group = G_RIB)
+ribUp  = input.color(color.new(#26a69a, 85), "上昇", inline = "rib", group = G_RIB)
+ribDn  = input.color(color.new(#ef5350, 85), "下降", inline = "rib", group = G_RIB)
+
+f_fill(bool _a, bool _b, float _va, float _vb) =>
+    ribOn and _a and _b ? (_va > _vb ? ribUp : ribDn) : na
+
+fill(p1,  p2,  color = f_fill(on1,  on2,  ma1, ma2),  title = "MA1-MA2")
+fill(p2,  p3,  color = f_fill(on2,  on3,  ma2, ma3),  title = "MA2-MA3")
+fill(p3,  p4,  color = f_fill(on3,  on4,  ma3, ma4),  title = "MA3-MA4")
+fill(p4,  p5,  color = f_fill(on4,  on5,  ma4, ma5),  title = "MA4-MA5")
+fill(p5,  p6,  color = f_fill(on5,  on6,  ma5, ma6),  title = "MA5-MA6")
+fill(p6,  p7,  color = f_fill(on6,  on7,  ma6, ma7),  title = "MA6-MA7")
+fill(p7,  p8,  color = f_fill(on7,  on8,  ma7, ma8),  title = "MA7-MA8")
+fill(p8,  p9,  color = f_fill(on8,  on9,  ma8, ma9),  title = "MA8-MA9")
+fill(p9,  p10, color = f_fill(on9,  on10, ma9, ma10), title = "MA9-MA10")
+
+// -----------------------------------------------------------------------------
+//  配列にまとめる（テーブル / パーフェクトオーダー判定用）
+// -----------------------------------------------------------------------------
+allOn   = array.from(on1, on2, on3, on4, on5, on6, on7, on8, on9, on10)
+allMA   = array.from(ma1, ma2, ma3, ma4, ma5, ma6, ma7, ma8, ma9, ma10)
+allPrev = array.from(ma1[1], ma2[1], ma3[1], ma4[1], ma5[1], ma6[1], ma7[1], ma8[1], ma9[1], ma10[1])
+allLen  = array.from(ln1, ln2, ln3, ln4, ln5, ln6, ln7, ln8, ln9, ln10)
+allTy   = array.from(ty1, ty2, ty3, ty4, ty5, ty6, ty7, ty8, ty9, ty10)
+allTf   = array.from(tf1, tf2, tf3, tf4, tf5, tf6, tf7, tf8, tf9, tf10)
+allCol  = array.from(co1, co2, co3, co4, co5, co6, co7, co8, co9, co10)
+
+// 表示中かつ値のあるMAを、期間の短い順に並べ替える
+ordV = array.new_float(0)
+ordP = array.new_float(0)
+ordL = array.new_int(0)
+ordI = array.new_int(0)
+
+for i = 0 to 9
+    if array.get(allOn, i) and not na(array.get(allMA, i))
+        l   = array.get(allLen, i)
+        // 挿入位置 = 自分より期間の短い（同じ）MAの本数
+        pos = 0
+        if array.size(ordL) > 0
+            for j = 0 to array.size(ordL) - 1
+                if array.get(ordL, j) <= l
+                    pos += 1
+        if pos >= array.size(ordL)
+            array.push(ordL, l)
+            array.push(ordV, array.get(allMA, i))
+            array.push(ordP, array.get(allPrev, i))
+            array.push(ordI, i)
+        else
+            array.insert(ordL, pos, l)
+            array.insert(ordV, pos, array.get(allMA, i))
+            array.insert(ordP, pos, array.get(allPrev, i))
+            array.insert(ordI, pos, i)
+
+nMA = array.size(ordV)
+
+// -----------------------------------------------------------------------------
+//  パーフェクトオーダー
+//  期間の短い順に「短期 > 中期 > 長期」（下降はその逆）に並んでいる状態。
+// -----------------------------------------------------------------------------
+G_PO = "パーフェクトオーダー"
+poOn      = input.bool(true,  "判定する", group = G_PO)
+poMin     = input.int(3, "最低本数", minval = 2, maxval = 10, group = G_PO, tooltip = "この本数以上のMAが表示されているときだけ判定します。")
+poNeedPx  = input.bool(true,  "価格の位置も条件に入れる", group = G_PO, tooltip = "上昇は終値が最短期MAより上、下降は下にあることを条件に加えます。")
+poBgOn    = input.bool(true,  "背景を色づけ", group = G_PO)
+poLblOn   = input.bool(true,  "成立時にラベル", group = G_PO)
+poUpCol   = input.color(color.new(#26a69a, 88), "上昇", inline = "po", group = G_PO)
+poDnCol   = input.color(color.new(#ef5350, 88), "下降", inline = "po", group = G_PO)
+
+poUp = poOn and nMA >= poMin
+poDn = poOn and nMA >= poMin
+
+if nMA >= 2
+    for i = 0 to nMA - 2
+        a = array.get(ordV, i)
+        b = array.get(ordV, i + 1)
+        poUp := poUp and a > b
+        poDn := poDn and a < b
+
+if poNeedPx and nMA > 0
+    shortest = array.get(ordV, 0)
+    poUp := poUp and close > shortest
+    poDn := poDn and close < shortest
+
+poUpStart = poUp and not poUp[1]
+poDnStart = poDn and not poDn[1]
+poEnd     = (not poUp and poUp[1]) or (not poDn and poDn[1])
+
+bgcolor(poBgOn and poUp ? poUpCol : poBgOn and poDn ? poDnCol : na, title = "パーフェクトオーダー背景")
+
+if poLblOn and poUpStart
+    label.new(bar_index, low, "PO↑", style = label.style_label_up, color = color.new(#26a69a, 20), textcolor = color.white, size = size.small)
+if poLblOn and poDnStart
+    label.new(bar_index, high, "PO↓", style = label.style_label_down, color = color.new(#ef5350, 20), textcolor = color.white, size = size.small)
+
+// -----------------------------------------------------------------------------
+//  クロス（任意の2本 / 価格とMA）
+// -----------------------------------------------------------------------------
+G_CR = "クロス"
+crOn    = input.bool(true, "MA同士のクロスを表示", group = G_CR)
+crFast  = input.int(1, "速いMA（スロット番号）", minval = 1, maxval = 10, inline = "cr", group = G_CR)
+crSlow  = input.int(2, "遅いMA（スロット番号）", minval = 1, maxval = 10, inline = "cr", group = G_CR)
+pxOn    = input.bool(false, "価格とMAのクロスを表示", group = G_CR)
+pxSlot  = input.int(2, "対象MA（スロット番号）", minval = 1, maxval = 10, group = G_CR)
+
+fastV = array.get(allMA, crFast - 1)
+slowV = array.get(allMA, crSlow - 1)
+gc    = crOn and crFast != crSlow and ta.crossover(fastV, slowV)
+dc    = crOn and crFast != crSlow and ta.crossunder(fastV, slowV)
+
+pxV   = array.get(allMA, pxSlot - 1)
+pxUp  = pxOn and ta.crossover(close, pxV)
+pxDn  = pxOn and ta.crossunder(close, pxV)
+
+plotshape(gc,   "ゴールデンクロス", shape.triangleup,   location.belowbar, color.new(#26a69a, 0), size = size.tiny)
+plotshape(dc,   "デッドクロス",     shape.triangledown, location.abovebar, color.new(#ef5350, 0), size = size.tiny)
+plotshape(pxUp, "価格がMAを上抜け", shape.circle,       location.belowbar, color.new(#2962ff, 0), size = size.tiny)
+plotshape(pxDn, "価格がMAを下抜け", shape.circle,       location.abovebar, color.new(#ff9800, 0), size = size.tiny)
+
+// -----------------------------------------------------------------------------
+//  バンド（ボリンジャー / パーセントエンベロープ）
+// -----------------------------------------------------------------------------
+G_BD = "バンド"
+bdOn   = input.bool(false, "バンドを表示", group = G_BD)
+bdTy   = input.string("SMA", "中心線の種別", group = G_BD, options = ["SMA", "EMA", "WMA", "SMMA(RMA)", "VWMA", "HMA", "DEMA", "TEMA"])
+bdLen  = input.int(20, "期間", minval = 1, group = G_BD)
+bdKind = input.string("標準偏差（ボリンジャー）", "幅の決め方", group = G_BD, options = ["標準偏差（ボリンジャー）", "パーセント（エンベロープ）"])
+bdMult = input.float(2.0, "σ倍率", step = 0.1, minval = 0.1, group = G_BD)
+bdPct  = input.float(3.0, "％", step = 0.1, minval = 0.1, group = G_BD)
+bdCol  = input.color(#2962ff, "色", inline = "bd", group = G_BD)
+bdFill = input.color(color.new(#2962ff, 92), "塗り", inline = "bd", group = G_BD)
+
+bdBase = f_ma(bdTy, srcAll, bdLen)
+bdDev  = bdKind == "標準偏差（ボリンジャー）" ? ta.stdev(srcAll, bdLen) * bdMult : bdBase * bdPct / 100.0
+bdUp   = plot(bdOn ? bdBase + bdDev : na, "バンド上", color = color.new(bdCol, 40))
+bdLo   = plot(bdOn ? bdBase - bdDev : na, "バンド下", color = color.new(bdCol, 40))
+plot(bdOn ? bdBase : na, "バンド中心", color = color.new(bdCol, 60))
+fill(bdUp, bdLo, color = bdOn ? bdFill : na, title = "バンド塗り")
+
+// -----------------------------------------------------------------------------
+//  情報テーブル
+// -----------------------------------------------------------------------------
+G_TB = "情報テーブル"
+tbOn  = input.bool(true, "表示する", group = G_TB)
+tbPos = input.string("右上", "位置", options = ["右上", "右下", "左上", "左下"], group = G_TB)
+tbSz  = input.string("小", "文字サイズ", options = ["極小", "小", "中"], group = G_TB)
+
+tbPosV = tbPos == "右上" ? position.top_right : tbPos == "右下" ? position.bottom_right : tbPos == "左上" ? position.top_left : position.bottom_left
+tbSzV  = tbSz  == "極小" ? size.tiny : tbSz == "小" ? size.small : size.normal
+
+var table tb = table.new(tbPosV, 5, 12, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 60), border_color = color.new(color.gray, 60))
+
+if tbOn and barstate.islast
+    table.clear(tb, 0, 0, 4, 11)
+    hdBg = color.new(color.gray, 80)
+    table.cell(tb, 0, 0, "MA",     bgcolor = hdBg, text_color = color.gray, text_size = tbSzV)
+    table.cell(tb, 1, 0, "設定",   bgcolor = hdBg, text_color = color.gray, text_size = tbSzV)
+    table.cell(tb, 2, 0, "値",     bgcolor = hdBg, text_color = color.gray, text_size = tbSzV)
+    table.cell(tb, 3, 0, "乖離率", bgcolor = hdBg, text_color = color.gray, text_size = tbSzV)
+    table.cell(tb, 4, 0, "傾き",   bgcolor = hdBg, text_color = color.gray, text_size = tbSzV)
+
+    if nMA > 0
+        for i = 0 to nMA - 1
+            slot = array.get(ordI, i)
+            v    = array.get(ordV, i)
+            pv   = array.get(ordP, i)
+            tfs  = array.get(allTf, slot)
+            dev  = (close - v) / v * 100.0
+            arw  = v > pv ? "▲" : v < pv ? "▼" : "→"
+            arwC = v > pv ? slopeUp : v < pv ? slopeDn : color.gray
+            table.cell(tb, 0, i + 1, "MA" + str.tostring(slot + 1), text_color = array.get(allCol, slot), text_size = tbSzV)
+            table.cell(tb, 1, i + 1, array.get(allTy, slot) + " " + str.tostring(array.get(allLen, slot)) + (tfs == "" ? "" : " / " + tfs), text_color = color.gray, text_size = tbSzV)
+            table.cell(tb, 2, i + 1, str.tostring(v, format.mintick), text_color = color.gray, text_size = tbSzV)
+            table.cell(tb, 3, i + 1, str.tostring(dev, "#.##") + "%", text_color = dev >= 0 ? slopeUp : slopeDn, text_size = tbSzV)
+            table.cell(tb, 4, i + 1, arw, text_color = arwC, text_size = tbSzV)
+
+    poTxt = poUp ? "パーフェクトオーダー ↑" : poDn ? "パーフェクトオーダー ↓" : "—"
+    poCol = poUp ? slopeUp : poDn ? slopeDn : color.gray
+    table.cell(tb, 0, nMA + 1, "状態", text_color = color.gray, text_size = tbSzV)
+    table.cell(tb, 1, nMA + 1, poTxt, text_color = poCol, text_size = tbSzV)
+
+// -----------------------------------------------------------------------------
+//  アラート
+//  チャート右上のアラート作成画面で、条件として選べます。
+// -----------------------------------------------------------------------------
+alertcondition(gc,        "ゴールデンクロス",         "MA10: ゴールデンクロス（速いMAが遅いMAを上抜け）")
+alertcondition(dc,        "デッドクロス",             "MA10: デッドクロス（速いMAが遅いMAを下抜け）")
+alertcondition(poUpStart, "パーフェクトオーダー成立（上昇）", "MA10: 上昇パーフェクトオーダーが成立しました")
+alertcondition(poDnStart, "パーフェクトオーダー成立（下降）", "MA10: 下降パーフェクトオーダーが成立しました")
+alertcondition(poEnd,     "パーフェクトオーダー崩れ", "MA10: パーフェクトオーダーが崩れました")
+alertcondition(pxUp,      "価格がMAを上抜け",         "MA10: 価格が指定MAを上抜けしました")
+alertcondition(pxDn,      "価格がMAを下抜け",         "MA10: 価格が指定MAを下抜けしました")
