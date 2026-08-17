@@ -11,8 +11,7 @@
 // =============================================================================
 
 indicator("移動平均フォーキャスト (MA Forecast)", "MA Forecast", overlay = true,
-     max_bars_back = 500, max_lines_count = 100, max_labels_count = 50,
-     max_polylines_count = 20)
+     max_bars_back = 500, max_lines_count = 500, max_labels_count = 20)
 
 // ── 入力 ─────────────────────────────────────────────────────────────────────
 gMA = "移動平均"
@@ -24,7 +23,7 @@ len2   = input.int(75, "長期の期間", minval = 1, maxval = 400, group = gMA)
 drawMA = input.bool(true, "実線の移動平均も描く", group = gMA)
 
 gFC = "予測"
-fcLen  = input.int(10, "予測する本数", minval = 1, maxval = 200, group = gFC,
+fcLen  = input.int(10, "予測する本数", minval = 1, maxval = 100, group = gFC,
      tooltip = "何本先まで移動平均を描くか。期間より長くすると仮定への依存が急に大きくなる。")
 mode   = input.string("横ばい", "将来の価格の置き方",
      options = ["横ばい", "直近の傾き", "変化率(%/本)", "目標価格まで直線"], group = gFC,
@@ -44,6 +43,8 @@ colPath  = input.color(color.new(#787b86, 30), "想定価格", inline = "c2", gr
 colGC    = input.color(color.new(#26a69a, 0), "GC", inline = "c2", group = gVW)
 colDC    = input.color(color.new(#ef5350, 0), "DC", inline = "c2", group = gVW)
 showTbl  = input.bool(true, "情報パネルを表示", group = gVW)
+tblPos   = input.string("右下", "情報パネルの位置", options = ["右上", "右下", "左上", "左下"], group = gVW,
+     tooltip = "他のインジケーターのパネルと重なる場合はここで移動する。")
 showBE   = input.bool(true, "次足の分岐点価格を表示", group = gVW,
      tooltip = "次の足がこの価格で引けると短期移動平均が横ばいになる。上回れば上向き、下回れば下向き。")
 
@@ -120,16 +121,31 @@ breakEven(source, length, curMA) =>
     f1 == f0 ? na : (curMA - f0) / (f1 - f0)
 
 // ── 計算と描画（最新足のみ）──────────────────────────────────────────────────
-var polyline plPath = na
-var polyline plMA1  = na
-var polyline plMA2  = na
-var label    lbEnd1 = na
-var label    lbEnd2 = na
-var label    lbCross = na
-var line     lnBE   = na
-var label    lbBE   = na
+// 予測は最新足でしか描かないので、毎回すべて消してから引き直す。
+var line[]  fcLines  = array.new<line>()
+var label[] fcLabels = array.new<label>()
 
-var table tbl = table.new(position.top_right, 2, 7, border_width = 1,
+seg(x1, y1, x2, y2, col, sty, w) =>
+    ln = line.new(x1, y1, x2, y2, xloc = xloc.bar_index, color = col, style = sty, width = w)
+    array.push(fcLines, ln)
+    ln
+
+// 予測値の配列を、現在値を起点に線分でつないで描く
+drawSeries(startY, vals, n, col, sty, w) =>
+    prevY = startY
+    for k = 1 to n
+        y = array.get(vals, k - 1)
+        seg(bar_index + k - 1, prevY, bar_index + k, y, col, sty, w)
+        prevY := y
+    prevY
+
+tblPosition = switch tblPos
+    "右上" => position.top_right
+    "右下" => position.bottom_right
+    "左上" => position.top_left
+    => position.bottom_left
+
+var table tbl = table.new(tblPosition, 2, 7, border_width = 1,
      frame_color = color.new(color.gray, 50), frame_width = 1)
 
 gcSoon = false
@@ -137,46 +153,33 @@ dcSoon = false
 crossK = 0
 
 if barstate.islast
-    polyline.delete(plPath)
-    polyline.delete(plMA1)
-    polyline.delete(plMA2)
-    label.delete(lbEnd1)
-    label.delete(lbEnd2)
-    label.delete(lbCross)
-    line.delete(lnBE)
-    label.delete(lbBE)
+    while array.size(fcLines) > 0
+        line.delete(array.pop(fcLines))
+    while array.size(fcLabels) > 0
+        label.delete(array.pop(fcLabels))
 
     proj = buildPath(src, fcLen)
     f1   = fcMA(src, len1, fcLen, proj, cur1)
     f2   = fcMA(src, len2, fcLen, proj, cur2)
 
     // --- 予測ライン ---
-    pts1 = array.from(chart.point.from_index(bar_index, cur1))
-    pts2 = array.from(chart.point.from_index(bar_index, cur2))
-    ptsP = array.from(chart.point.from_index(bar_index, src))
-    for k = 1 to fcLen
-        array.push(pts1, chart.point.from_index(bar_index + k, array.get(f1, k - 1)))
-        array.push(ptsP, chart.point.from_index(bar_index + k, array.get(proj, k - 1)))
-        if useMA2
-            array.push(pts2, chart.point.from_index(bar_index + k, array.get(f2, k - 1)))
-
     if drawPath
-        plPath := polyline.new(ptsP, line_color = colPath, line_style = line.style_dotted)
-    plMA1 := polyline.new(pts1, line_color = col1, line_width = 2, line_style = line.style_dashed)
+        drawSeries(src, proj, fcLen, colPath, line.style_dotted, 1)
+    drawSeries(cur1, f1, fcLen, col1, line.style_dashed, 2)
     if useMA2
-        plMA2 := polyline.new(pts2, line_color = col2, line_width = 2, line_style = line.style_dashed)
+        drawSeries(cur2, f2, fcLen, col2, line.style_dashed, 2)
 
     end1 = array.get(f1, fcLen - 1)
-    lbEnd1 := label.new(bar_index + fcLen, end1,
+    array.push(fcLabels, label.new(bar_index + fcLen, end1,
          str.tostring(len1) + maType + " " + str.tostring(end1, format.mintick),
          style = label.style_label_left, color = color.new(col1, 15),
-         textcolor = color.white, size = size.small)
+         textcolor = color.white, size = size.small))
     if useMA2
         end2 = array.get(f2, fcLen - 1)
-        lbEnd2 := label.new(bar_index + fcLen, end2,
+        array.push(fcLabels, label.new(bar_index + fcLen, end2,
              str.tostring(len2) + maType + " " + str.tostring(end2, format.mintick),
              style = label.style_label_left, color = color.new(col2, 15),
-             textcolor = color.white, size = size.small)
+             textcolor = color.white, size = size.small))
 
     // --- クロス予測 ---
     if useMA2
@@ -191,20 +194,19 @@ if barstate.islast
         if crossK > 0
             cx = bar_index + crossK
             cy = array.get(f1, crossK - 1)
-            lbCross := label.new(cx, cy,
+            array.push(fcLabels, label.new(cx, cy,
                  (gcSoon ? "GC" : "DC") + " 予測\n" + str.tostring(crossK) + "本後",
                  style = gcSoon ? label.style_label_up : label.style_label_down,
-                 color = gcSoon ? colGC : colDC, textcolor = color.white, size = size.small)
+                 color = gcSoon ? colGC : colDC, textcolor = color.white, size = size.small))
 
     // --- 次足の分岐点価格 ---
     be = breakEven(src, len1, cur1)
     if showBE and not na(be)
-        lnBE := line.new(bar_index, be, bar_index + fcLen, be,
-             color = color.new(col1, 40), style = line.style_dotted)
-        lbBE := label.new(bar_index + 1, be,
+        seg(bar_index, be, bar_index + fcLen, be, color.new(col1, 40), line.style_dotted, 1)
+        array.push(fcLabels, label.new(bar_index + fcLen, be,
              "分岐 " + str.tostring(be, format.mintick),
              style = label.style_label_left, color = color.new(color.black, 30),
-             textcolor = color.white, size = size.tiny)
+             textcolor = color.white, size = size.tiny))
 
     // --- 情報パネル ---
     if showTbl
