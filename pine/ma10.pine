@@ -19,6 +19,10 @@
 //    - 時間帯フィルターとシグナルの間引き（最短間隔）
 //
 //  TradingView の Pine エディタに貼り付けて「チャートに追加」で使えます。
+//
+//  【注意】TradingView は1スクリプトあたり64プロットまでです。
+//  plot / fill / plotshape / bgcolor がそれぞれ枠を消費します（系列色の plot は2つ分）。
+//  機能を足すときはこの上限に注意してください。アラートは枠を消費しない alert() 方式です。
 // =============================================================================
 //@version=6
 indicator("MA10 — 移動平均10本", shorttitle = "MA10", overlay = true, max_labels_count = 500)
@@ -501,20 +505,43 @@ if tbOn and barstate.islast
 
 // -----------------------------------------------------------------------------
 //  アラート
-//  チャート右上のアラート作成画面で、条件として選べます。
+//  alertcondition() は1つにつきプロット枠を1つ消費し、64プロットの上限に当たるため、
+//  枠を消費しない alert() 方式にしています。
+//
+//  設定方法：チャート右上の時計マーク → 条件に「MA10」を選び、
+//            「関数呼び出しによるアラート（Any alert() function call）」を選ぶだけです。
+//            どのイベントを通知するかは、下のチェックボックスで選びます。
 // -----------------------------------------------------------------------------
-alertcondition(gc,        "ゴールデンクロス",         "MA10: ゴールデンクロス（速いMAが遅いMAを上抜け）")
-alertcondition(dc,        "デッドクロス",             "MA10: デッドクロス（速いMAが遅いMAを下抜け）")
-alertcondition(poUpStart, "パーフェクトオーダー成立（上昇）", "MA10: 上昇パーフェクトオーダーが成立しました")
-alertcondition(poDnStart, "パーフェクトオーダー成立（下降）", "MA10: 下降パーフェクトオーダーが成立しました")
-alertcondition(poEnd,     "パーフェクトオーダー崩れ", "MA10: パーフェクトオーダーが崩れました")
-alertcondition(pxUp,      "価格がMAを上抜け",         "MA10: 価格が指定MAを上抜けしました")
-alertcondition(pxDn,      "価格がMAを下抜け",         "MA10: 価格が指定MAを下抜けしました")
-alertcondition(pbUp,      "押し目タッチ",             "MA10: 上位足が上昇のまま、価格が指定MAまで押しました")
-alertcondition(pbDn,      "戻りタッチ",               "MA10: 上位足が下降のまま、価格が指定MAまで戻しました")
-alertcondition(orbUp,     "寄りレンジ上抜け",         "MA10: 寄り付きレンジの高値を上抜けしました")
-alertcondition(orbDn,     "寄りレンジ下抜け",         "MA10: 寄り付きレンジの安値を下抜けしました")
-alertcondition(htfUp and not htfUp[1], "上位足が上昇に転換", "MA10: 上位足のトレンドが上昇に変わりました")
-alertcondition(htfDn and not htfDn[1], "上位足が下降に転換", "MA10: 上位足のトレンドが下降に変わりました")
-alertcondition(showVW and ta.crossover(close, vwapV),  "VWAPを上抜け", "MA10: 価格がVWAPを上抜けしました")
-alertcondition(showVW and ta.crossunder(close, vwapV), "VWAPを下抜け", "MA10: 価格がVWAPを下抜けしました")
+G_AL = "アラート"
+alOnClose = input.bool(true,  "確定足でのみ通知する", group = G_AL, tooltip = "OFFにすると足の途中でも通知します（ダマシが増えます）。")
+alCross   = input.bool(true,  "ゴールデン/デッドクロス", group = G_AL)
+alPO      = input.bool(true,  "パーフェクトオーダー（成立・崩れ）", group = G_AL)
+alPb      = input.bool(true,  "押し目・戻りタッチ", group = G_AL)
+alOrb     = input.bool(true,  "寄りレンジのブレイク", group = G_AL)
+alPx      = input.bool(false, "価格とMAのクロス", group = G_AL)
+alHtf     = input.bool(false, "上位足トレンドの転換", group = G_AL)
+alVw      = input.bool(false, "VWAPの上抜け・下抜け", group = G_AL)
+
+f_alert(bool _cond, string _msg) =>
+    if _cond
+        msg = syminfo.ticker + " " + timeframe.period + "  " + _msg + "  終値 " + str.tostring(close, format.mintick)
+        if alOnClose
+            alert(msg, alert.freq_once_per_bar_close)
+        else
+            alert(msg, alert.freq_once_per_bar)
+
+f_alert(alCross and gc, "ゴールデンクロス")
+f_alert(alCross and dc, "デッドクロス")
+f_alert(alPO and poUpStart, "パーフェクトオーダー成立（上昇）")
+f_alert(alPO and poDnStart, "パーフェクトオーダー成立（下降）")
+f_alert(alPO and poEnd,     "パーフェクトオーダー崩れ")
+f_alert(alPb and pbUp, "押し目タッチ（上位足は上昇）")
+f_alert(alPb and pbDn, "戻りタッチ（上位足は下降）")
+f_alert(alOrb and orbUp, "寄りレンジ上抜け")
+f_alert(alOrb and orbDn, "寄りレンジ下抜け")
+f_alert(alPx and pxUp, "価格がMAを上抜け")
+f_alert(alPx and pxDn, "価格がMAを下抜け")
+f_alert(alHtf and htfUp and not htfUp[1], "上位足が上昇に転換")
+f_alert(alHtf and htfDn and not htfDn[1], "上位足が下降に転換")
+f_alert(alVw and showVW and ta.crossover(close, vwapV),  "VWAPを上抜け")
+f_alert(alVw and showVW and ta.crossunder(close, vwapV), "VWAPを下抜け")
