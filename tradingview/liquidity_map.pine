@@ -1,0 +1,270 @@
+//@version=6
+// 流動性マップ（デイトレ用）
+// 毎日自動で、注文が溜まりやすい価格帯をチャートに描く。
+//   - 前日高値/安値 (PDH/PDL)
+//   - 前日POC・バリューエリア上限/下限 (VAH/VAL)
+//   - 寄り付き後レンジの高値/安値 (ORH/ORL)
+//   - 直近スイング高値/安値の流動性 (BSL/SSL)。取られたら点線になる
+//   - 「抜けてから戻った」足に狩りラベル
+// 分足（1分〜15分）で使う想定。
+indicator("流動性マップ", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ---------- 入力 ----------
+grpDay   = "前日の水準"
+showPD   = input.bool(true, "前日高値/安値", group = grpDay)
+showPOC  = input.bool(true, "前日POC", group = grpDay)
+showVA   = input.bool(true, "前日バリューエリア (VAH/VAL)", group = grpDay)
+rows     = input.int(50, "プロファイルの分割数", minval = 10, maxval = 200, group = grpDay)
+vaPct    = input.float(70, "バリューエリア (%)", minval = 50, maxval = 95, group = grpDay) / 100
+
+grpOR    = "寄り付き後レンジ"
+showOR   = input.bool(true, "寄り付き後レンジ高値/安値", group = grpOR)
+orMin    = input.int(30, "レンジの長さ（分）", minval = 5, maxval = 120, group = grpOR)
+
+grpPiv   = "スイングの流動性"
+showPiv  = input.bool(true, "スイング高値/安値", group = grpPiv)
+pivLen   = input.int(10, "スイング判定の本数", minval = 2, maxval = 50, group = grpPiv)
+maxPiv   = input.int(3, "片側に残す本数", minval = 1, maxval = 10, group = grpPiv)
+
+grpSw    = "狩りラベル"
+showSw   = input.bool(true, "抜けて戻った足にラベル", group = grpSw)
+
+colPD    = input.color(color.orange, "前日高値/安値", group = "色")
+colPOC   = input.color(color.yellow, "POC", group = "色")
+colVA    = input.color(color.gray, "VAH/VAL", group = "色")
+colOR    = input.color(color.blue, "寄り付き後レンジ", group = "色")
+colBSL   = input.color(color.red, "上の流動性 (BSL)", group = "色")
+colSSL   = input.color(color.teal, "下の流動性 (SSL)", group = "色")
+
+// ---------- 関数 ----------
+// 1日分の (価格, 出来高) から POC / VAH / VAL を求める
+f_profile(array<float> p, array<float> v, float hi, float lo, int n, float pct) =>
+    float poc = na
+    float vah = na
+    float val = na
+    if array.size(p) > 0 and hi > lo
+        float step = (hi - lo) / n
+        bins = array.new_float(n, 0.0)
+        for i = 0 to array.size(p) - 1
+            int idx = math.min(n - 1, math.max(0, int((array.get(p, i) - lo) / step)))
+            array.set(bins, idx, array.get(bins, idx) + array.get(v, i))
+        int pocIdx = array.indexof(bins, array.max(bins))
+        float total = array.sum(bins)
+        int up = pocIdx
+        int dn = pocIdx
+        float acc = array.get(bins, pocIdx)
+        while acc < total * pct and (up < n - 1 or dn > 0)
+            float vUp = up < n - 1 ? array.get(bins, up + 1) : -1.0
+            float vDn = dn > 0 ? array.get(bins, dn - 1) : -1.0
+            if vUp >= vDn
+                up += 1
+                acc += vUp
+            else
+                dn -= 1
+                acc += vDn
+        poc := lo + step * (pocIdx + 0.5)
+        vah := lo + step * (up + 1)
+        val := lo + step * dn
+    [poc, vah, val]
+
+// 水平線を新規作成、または既存の線を今日の位置へ移す
+f_line(line ln, float y, color c, string st) =>
+    line l = ln
+    if na(l)
+        l := line.new(bar_index, y, bar_index + 1, y, extend = extend.right, color = c, style = st, width = 1)
+    else
+        line.set_xy1(l, bar_index, y)
+        line.set_xy2(l, bar_index + 1, y)
+    l
+
+f_label(label lb, float y, color c, string txt) =>
+    label b = lb
+    if na(b)
+        b := label.new(bar_index, y, txt, style = label.style_label_left, color = color.new(c, 100), textcolor = c, size = size.small)
+    else
+        label.set_xy(b, bar_index, y)
+        label.set_text(b, txt)
+    b
+
+f_sweepLabel(bool isHigh, string txt) =>
+    if isHigh
+        label.new(bar_index, high, txt, style = label.style_label_down, color = color.new(colBSL, 0), textcolor = color.white, size = size.tiny)
+    else
+        label.new(bar_index, low, txt, style = label.style_label_up, color = color.new(colSSL, 0), textcolor = color.white, size = size.tiny)
+
+// ---------- 1日の集計 ----------
+newDay = timeframe.change("D")
+
+var float dHigh = na
+var float dLow = na
+var float pdh = na
+var float pdl = na
+var float pPoc = na
+var float pVah = na
+var float pVal = na
+var array<float> dayPx = array.new_float()
+var array<float> dayVol = array.new_float()
+
+var int dayStart = na
+var float orH = na
+var float orL = na
+var bool orDone = false
+
+var bool pdhTaken = false
+var bool pdlTaken = false
+var bool orhTaken = false
+var bool orlTaken = false
+
+var line pdhLn = na
+var line pdlLn = na
+var line pocLn = na
+var line vahLn = na
+var line valLn = na
+var line orhLn = na
+var line orlLn = na
+var label pdhLb = na
+var label pdlLb = na
+var label pocLb = na
+var label vahLb = na
+var label valLb = na
+var label orhLb = na
+var label orlLb = na
+
+if newDay
+    pdh := dHigh
+    pdl := dLow
+    [poc, vah, val] = f_profile(dayPx, dayVol, dHigh, dLow, rows, vaPct)
+    pPoc := poc
+    pVah := vah
+    pVal := val
+    array.clear(dayPx)
+    array.clear(dayVol)
+    dHigh := high
+    dLow := low
+    dayStart := time
+    orH := high
+    orL := low
+    orDone := false
+    pdhTaken := false
+    pdlTaken := false
+    orhTaken := false
+    orlTaken := false
+    if showPD and not na(pdh)
+        pdhLn := f_line(pdhLn, pdh, colPD, line.style_solid)
+        pdlLn := f_line(pdlLn, pdl, colPD, line.style_solid)
+        pdhLb := f_label(pdhLb, pdh, colPD, "前日高値")
+        pdlLb := f_label(pdlLb, pdl, colPD, "前日安値")
+    if showPOC and not na(pPoc)
+        pocLn := f_line(pocLn, pPoc, colPOC, line.style_solid)
+        pocLb := f_label(pocLb, pPoc, colPOC, "前日POC")
+    if showVA and not na(pVah)
+        vahLn := f_line(vahLn, pVah, colVA, line.style_dashed)
+        valLn := f_line(valLn, pVal, colVA, line.style_dashed)
+        vahLb := f_label(vahLb, pVah, colVA, "前日VAH")
+        valLb := f_label(valLb, pVal, colVA, "前日VAL")
+else
+    dHigh := na(dHigh) ? high : math.max(dHigh, high)
+    dLow := na(dLow) ? low : math.min(dLow, low)
+
+array.push(dayPx, hlc3)
+array.push(dayVol, nz(volume))
+
+// ---------- 寄り付き後レンジ ----------
+inOR = not na(dayStart) and time - dayStart < orMin * 60000
+if inOR and not newDay
+    orH := math.max(orH, high)
+    orL := math.min(orL, low)
+if not inOR and not orDone and not na(dayStart)
+    orDone := true
+    if showOR
+        orhLn := f_line(orhLn, orH, colOR, line.style_dotted)
+        orlLn := f_line(orlLn, orL, colOR, line.style_dotted)
+        orhLb := f_label(orhLb, orH, colOR, "寄り後高値")
+        orlLb := f_label(orlLb, orL, colOR, "寄り後安値")
+
+// ---------- 狩り（抜けて戻った）判定 ----------
+// 上の水準：ヒゲで上抜け、終値は下に戻った
+f_upSweep(float lvl, bool taken) => not taken and not na(lvl) and high > lvl and close < lvl
+// 下の水準：ヒゲで下抜け、終値は上に戻った
+f_dnSweep(float lvl, bool taken) => not taken and not na(lvl) and low < lvl and close > lvl
+
+conf = barstate.isconfirmed
+pdhSweep = conf and showPD and f_upSweep(pdh, pdhTaken)
+pdlSweep = conf and showPD and f_dnSweep(pdl, pdlTaken)
+orhSweep = conf and showOR and orDone and f_upSweep(orH, orhTaken)
+orlSweep = conf and showOR and orDone and f_dnSweep(orL, orlTaken)
+
+if conf
+    if showSw
+        if pdhSweep
+            f_sweepLabel(true, "前日高値 狩り")
+        if pdlSweep
+            f_sweepLabel(false, "前日安値 狩り")
+        if orhSweep
+            f_sweepLabel(true, "寄り後高値 狩り")
+        if orlSweep
+            f_sweepLabel(false, "寄り後安値 狩り")
+    // 一度抜けた水準は、その日はもう判定しない
+    if not na(pdh) and high > pdh
+        pdhTaken := true
+    if not na(pdl) and low < pdl
+        pdlTaken := true
+    if orDone and high > orH
+        orhTaken := true
+    if orDone and low < orL
+        orlTaken := true
+
+// ---------- スイング高値/安値の流動性 ----------
+var array<line> bsl = array.new_line()
+var array<line> ssl = array.new_line()
+bool pivSweepUp = false
+bool pivSweepDn = false
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+
+if showPiv
+    if not na(ph)
+        array.push(bsl, line.new(bar_index - pivLen, ph, bar_index, ph, color = colBSL, width = 1))
+        if array.size(bsl) > maxPiv
+            line.delete(array.shift(bsl))
+    if not na(pl)
+        array.push(ssl, line.new(bar_index - pivLen, pl, bar_index, pl, color = colSSL, width = 1))
+        if array.size(ssl) > maxPiv
+            line.delete(array.shift(ssl))
+    if array.size(bsl) > 0
+        for i = array.size(bsl) - 1 to 0
+            line l = array.get(bsl, i)
+            float lv = line.get_y1(l)
+            line.set_x2(l, bar_index)
+            if conf and high > lv
+                line.set_style(l, line.style_dotted)
+                line.set_color(l, color.new(colBSL, 60))
+                array.remove(bsl, i)
+                if close < lv
+                    pivSweepUp := true
+    if array.size(ssl) > 0
+        for i = array.size(ssl) - 1 to 0
+            line l = array.get(ssl, i)
+            float lv = line.get_y1(l)
+            line.set_x2(l, bar_index)
+            if conf and low < lv
+                line.set_style(l, line.style_dotted)
+                line.set_color(l, color.new(colSSL, 60))
+                array.remove(ssl, i)
+                if close > lv
+                    pivSweepDn := true
+
+if showSw and pivSweepUp and not pdhSweep and not orhSweep
+    f_sweepLabel(true, "高値 狩り")
+if showSw and pivSweepDn and not pdlSweep and not orlSweep
+    f_sweepLabel(false, "安値 狩り")
+
+// ---------- ラベルを右端へ ----------
+if barstate.islast
+    for lb in array.from(pdhLb, pdlLb, pocLb, vahLb, valLb, orhLb, orlLb)
+        if not na(lb)
+            label.set_x(lb, bar_index + 3)
+
+// ---------- アラート ----------
+alertcondition(pdhSweep or orhSweep or pivSweepUp, "上の流動性を取って戻った", "{{ticker}} 上の流動性を取って戻りました（売り目線の候補）")
+alertcondition(pdlSweep or orlSweep or pivSweepDn, "下の流動性を取って戻った", "{{ticker}} 下の流動性を取って戻りました（買い目線の候補）")
